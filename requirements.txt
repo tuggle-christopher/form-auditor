@@ -1,0 +1,11 @@
+# Headless OpenCV: works on servers / Databricks (no GUI libraries needed). Do not install
+# opencv-python alongside it - both provide `cv2`. (Only the desktop-only `calibrate`
+# command needs a GUI build; templates are normally built with tools/build_template_from_pdf.py.)
+opencv-python-headless>=4.8
+numpy>=1.24
+pypdfium2>=4.20         # PDF rendering (no system dependencies)
+Pillow>=10.0
+PyYAML>=6.0
+azure-storage-blob>=12.19   # reading / writing https://<account>.blob.core.windows.net/... paths
+
+# The Azure AI Document Intelligence reader (--ocr azure) needs no extra package.

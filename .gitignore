@@ -1,0 +1,46 @@
+# ---- Filled forms and scans: never commit -------------------------------
+# (case-insensitive: phones often save IMG_1234.JPG / .HEIC in capitals)
+*.[pP][dD][fF]
+*.[jJ][pP][gG]
+*.[jJ][pP][eE][gG]
+*.[pP][nN][gG]
+*.[tT][iI][fF]
+*.[tT][iI][fF][fF]
+*.[hH][eE][iI][cC]
+*.[bB][mM][pP]
+*.[wW][eE][bB][pP]
+samples/
+scans/
+forms/
+input/
+
+# ---- Templates: built from your blank form (page images, its wording, your rules) ----
+# Kept out of git. Rebuild them from the blank PDF (see templates/README.md), or copy the
+# folder across by hand.
+templates/*
+!templates/README.md
+
+# ---- Audit output (contains values read from forms) ---------------------
+audit_out/
+*_audit.csv
+*_extracted.csv
+*_summary.csv
+all_findings.csv
+extracted_data.csv
+batch_summary.csv
+rule_summary.csv
+debug/
+
+# ---- Tests that name your form's items, and test output ----------------
+local_tests/
+examples/demo/
+
+# ---- Python / editor / secrets ------------------------------------------
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.DS_Store
+.idea/
+.vscode/

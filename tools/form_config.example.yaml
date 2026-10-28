@@ -1,0 +1,40 @@
+# Example form config for tools/build_template_from_pdf.py.
+# Copy to templates/form_config.yaml (git-ignored) and fill in for your form.
+
+form_id: FORM-ID                  # shown in the reports
+name: My checklist
+version: ""                       # shown in reports; --version on the command line overrides it
+output_stem: form                 # -> templates/form.yaml, form_p1.png, ...
+rules_csv: form_rules.csv         # rule texts quoted in the reports (put it in templates/)
+
+# Printed words the builder looks for (only change them if your form uses other words).
+labels: {section: Section, sign: Sign, date: Date, response: Response}
+
+# Free-text fields of the header section: the builder finds the printed word `find` and
+# takes the cell to its right as the box to fill in.
+#   format: id | text | date | time | number;  allow_na: a written "NA" is acceptable
+header_section: A
+header_fields:
+  - {id: A.reference, find: Reference, label: "Reference number", format: id,
+     allow_na: true, rule_ref: [A-1, A-3]}
+  - {id: A.date, find: Received, label: "Date received", format: date,
+     allow_na: false, rule_ref: [A-1, A-2, A-3]}
+
+# Answer rows (Yes / No / NA): which answers are flagged (FAIL), and when the details
+# column must stay empty / must be filled in.
+choice_defaults:
+  flag_when_selected: ["No"]
+  details: {required_when: [], must_be_blank_when: ["Yes", "NA"]}
+
+# Optional: the flag and details rules cover only rows 1..N of a section; later rows
+# still need an answer.
+flag_rows_upto: {}               # e.g. {B: 5}
+
+# Optional: "NA box of item X must not be ticked when answer Y is Yes". Added only when
+# the form has both items.
+cross_checks: []
+#  - {id: C2_NA_vs_B3, checkbox: C2.NA, item: B3, value: "Yes", rule_ref: [C-2x],
+#     description: "Section B item 3 is Yes, so the item 2 NA box must not be ticked"}
+
+# Optional: settings written into the template (see form_auditor/settings.py).
+settings: {}
