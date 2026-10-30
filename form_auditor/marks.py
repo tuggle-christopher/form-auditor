@@ -163,9 +163,15 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
         return None
     x0, y0, x1, y1 = wb
     ww, wh = x1 - x0, y1 - y0
+    # a stroke counts as crossing the word only if it passes this close to its centre;
+    # measured on the word's smaller side, so the sides of a circle drawn tightly around
+    # a tall word printed on two lines ("Ye/s") don't qualify
+    wmin = min(ww, wh)
     H, W = ctx.shape
     X0, Y0 = max(0, int(x0 - 0.6 * ww)), max(0, int(y0 - 1.2 * wh))
     X1, Y1 = min(W, int(x1 + 0.6 * ww)), min(H, int(y1 + 1.2 * wh))
+    if row_box is not None:                 # strokes of the rows above / below don't count
+        Y0, Y1 = max(Y0, row_box[1] - 4), min(Y1, row_box[3] + 4)
     from .ink import ink_mask
     pad = 30
     big = ctx.maps.warped[max(0, Y0 - pad):Y1 + pad, max(0, X0 - pad):X1 + pad]
@@ -193,6 +199,24 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
     # shorter pieces may confirm the second diagonal (its arms are often clipped)
     short = hough(10, max(8, int(0.25 * ww)), 8)
     px_, py_ = (x0 + x1) / 2 - X0, (y0 + y1) / 2 - Y0
+    # the middle of the word (inner 60%): an X or a strike drawn through the word crosses
+    # it; a circle drawn around the word - however tightly - only touches its edges
+    ix0, ix1 = x0 + 0.2 * ww - X0, x1 - 0.2 * ww - X0
+    iy0, iy1 = y0 + 0.2 * wh - Y0, y1 - 0.2 * wh - Y0
+
+    ext = 0.5 * max(ww, wh)
+
+    def through_word(xa, ya, xb, yb):
+        # the parts of an X lying over the letters are removed with the print, so the
+        # arms that are left are extended along their direction: an arm of an X points
+        # through the word, the edge of a circle curves around it
+        L = max(np.hypot(xb - xa, yb - ya), 1.0)
+        ux, uy = (xb - xa) / L, (yb - ya) / L
+        xa, ya, xb, yb = xa - ext * ux, ya - ext * uy, xb + ext * ux, yb + ext * uy
+        t = np.linspace(0.0, 1.0, 48)
+        xs_, ys_ = xa + (xb - xa) * t, ya + (yb - ya) * t
+        return bool(((xs_ >= ix0) & (xs_ <= ix1) & (ys_ >= iy0) & (ys_ <= iy1)).any())
+
     reach = {"A": [np.inf, -np.inf], "B": [np.inf, -np.inf]}
     strike = False
     straight = []                     # strokes through the word: removed before the ring test
@@ -201,7 +225,9 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
         ang = math.degrees(math.atan2(-(yb - ya), xb - xa)) % 180
         d = abs((xb - xa) * (ya - py_) - (xa - px_) * (yb - ya)) / max(length, 1)
         cls = ("A" if 20 <= ang <= 70 else "B" if 110 <= ang <= 160 else None)
-        if cls and d <= 0.4 * wh:
+        if not through_word(xa, ya, xb, yb):
+            continue
+        if cls and d <= 0.4 * wmin:
             reach[cls][0] = min(reach[cls][0], xa, xb)
             reach[cls][1] = max(reach[cls][1], xa, xb)
             straight.append((xa, ya, xb, yb))
@@ -221,7 +247,7 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
         length = math.hypot(xb - xa, yb - ya)
         ang = math.degrees(math.atan2(-(yb - ya), xb - xa)) % 180
         d = abs((xb - xa) * (ya - py_) - (xa - px_) * (yb - ya)) / max(length, 1)
-        if d <= 0.4 * wh:
+        if d <= 0.4 * wmin and through_word(xa, ya, xb, yb):
             c = "A" if 20 <= ang <= 70 else "B" if 110 <= ang <= 160 else None
             if c:
                 present_short.add(c)
@@ -387,7 +413,111 @@ def _merge_fragments(pieces: list, s: Settings) -> list:
     return pieces
 
 
-def _row_aware_groups(sub: np.ndarray, rows: list[dict], ry0: int, s: Settings) -> list[np.ndarray]:
+def _encloses_word(P: np.ndarray, words: dict, ox: int, oy: int, s: Settings) -> Optional[str]:
+    """The printed word (template px boxes; the piece's sub-image starts at ox, oy) that
+    the piece's outline surrounds, if any."""
+    ys, xs = np.nonzero(P)
+    if len(ys) < 10:
+        return None
+    gx0, gy0 = xs.min(), ys.min()
+    L = P[gy0:ys.max() + 1, gx0:xs.max() + 1]
+    hull, coverage, ring, _ = _shape_features(L)
+    if coverage < 0.35:
+        return None
+    for o, wb in words.items():
+        x0, y0, x1, y1 = wb[0] - ox - gx0, wb[1] - oy - gy0, wb[2] - ox - gx0, wb[3] - oy - gy0
+        dx, dy = int(0.1 * (x1 - x0)), int(0.1 * (y1 - y0))
+        ix0, iy0 = max(0, x0 + dx), max(0, y0 + dy)
+        ix1, iy1 = min(hull.shape[1], x1 - dx), min(hull.shape[0], y1 - dy)
+        area = max((x1 - x0 - 2 * dx) * (y1 - y0 - 2 * dy), 1)
+        if ix1 > ix0 and iy1 > iy0 and hull[iy0:iy1, ix0:ix1].sum() >= s.enclose_min * area:
+            return o
+    return None
+
+
+def _merge_around_words(pieces: list, rows: list[dict], ox: int, oy: int, s: Settings) -> list:
+    """Within a row band, join pieces that together - but none alone - surround a printed
+    word: a circle drawn tightly around a word loses the parts that ran over its letters,
+    leaving e.g. a left and a right arc."""
+    out = []
+    for band in sorted({p[0] for p in pieces}):
+        items = [p[1] for p in pieces if p[0] == band]
+        words = rows[band]["words"]
+        used = set()
+        for o, wb in words.items():
+            cell = rows[band]["cells"].get(o, wb)
+            wh = wb[3] - wb[1]
+            near = []
+            for k, P in enumerate(items):
+                if k in used or _encloses_word(P, words, ox, oy, s):
+                    continue
+                ys, xs = np.nonzero(P)
+                # only pieces in this word's own cell (a circle's arcs around it), never
+                # pieces of the neighbouring option's mark
+                cx = (xs.min() + xs.max()) / 2 + ox
+                by0, by1 = ys.min() + oy, ys.max() + oy
+                if cell[0] - 8 <= cx <= cell[2] + 8 and by1 >= wb[1] - wh and by0 <= wb[3] + wh:
+                    near.append(k)
+            if len(near) < 2:
+                continue
+            union = np.zeros_like(items[near[0]])
+            for k in near:
+                union |= items[k]
+            if _encloses_word(union, {o: wb}, ox, oy, s) == o:
+                out.append([band, union])
+                used.update(near)
+        out += [[band, P] for k, P in enumerate(items) if k not in used]
+    return out
+
+
+def _merge_side_spills(pieces: list, rows: list[dict], ox: int, oy: int, s: Settings) -> list:
+    """Within a row band, a small piece that surrounds no word and sits right next to a
+    circle that does is part of that circle - typically where the circle ran over a cell
+    border into the neighbouring option's cell and was cut there."""
+    near = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (4 * s.mark_group_px + 1,) * 2)
+
+    def on_other_word(Q, words, own):
+        """Does the piece lie on a printed word other than the circle's own? (Then it is
+        a mark of its own - a tick on No beside a circle on Yes is two answers.)"""
+        ys, xs = np.nonzero(Q)
+        qx0, qy0, qx1, qy1 = xs.min() + ox, ys.min() + oy, xs.max() + ox, ys.max() + oy
+        area = max((qx1 - qx0) * (qy1 - qy0), 1)
+        for o, wb in words.items():
+            if o == own:
+                continue
+            w = min(qx1, wb[2]) - max(qx0, wb[0])
+            h = min(qy1, wb[3]) - max(qy0, wb[1])
+            if w > 0 and h > 0 and w * h > 0.15 * area:
+                return True
+        return False
+
+    changed = True
+    while changed:
+        changed = False
+        for i, (bi, P) in enumerate(pieces):
+            own = _encloses_word(P, rows[bi]["words"], ox, oy, s)
+            if own is None:
+                continue
+            grown = cv2.dilate(P.astype(np.uint8), near).astype(bool)
+            for j, (bj, Q) in enumerate(pieces):
+                if j == i or bj != bi or Q.sum() >= s.spill_merge_ratio * P.sum():
+                    continue
+                if _encloses_word(Q, rows[bj]["words"], ox, oy, s) is not None:
+                    continue
+                if on_other_word(Q, rows[bj]["words"], own):
+                    continue
+                if (grown & Q).any():
+                    pieces[i][1] = P | Q
+                    pieces.pop(j)
+                    changed = True
+                    break
+            if changed:
+                break
+    return pieces
+
+
+def _row_aware_groups(sub: np.ndarray, rows: list[dict], ry0: int, s: Settings,
+                      rx0: int = 0) -> list[np.ndarray]:
     """Group stroke pieces into marks without merging marks of neighbouring rows.
 
     Pieces are grouped generously inside each row band (bridging the gaps that removing
@@ -422,23 +552,71 @@ def _row_aware_groups(sub: np.ndarray, rows: list[dict], ry0: int, s: Settings) 
     # then join remaining fragments (tick / cross pieces) - complete rings stay separate,
     # so two circles drawn close together remain two answers
     pieces = _merge_ring_pieces(pieces, s)
+    pieces = _merge_around_words(pieces, rows, rx0, ry0, s)
     pieces = _merge_fragments(pieces, s)
-    # merge small spill-overs across row lines
-    touch = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    pieces = _merge_side_spills(pieces, rows, rx0, ry0, s)
+    # Across a row line: a circle drawn over the line is cut in two there (the printed
+    # line is removed with the form, leaving a gap of a few px in the pen stroke), and the
+    # part beyond the line would read as a mark in the neighbouring row. Pieces whose ends
+    # face each other across the line are joined when the result is a clearly better
+    # circle and neither piece is already a complete circle of its own (two circles on
+    # neighbouring rows stay two answers), or when one is just a small spill.
+    gap = s.template_dilate_px + 8
+
+    def crossings(P, y_line, above):
+        """x-centres of the places where the stroke meets the line steeply, from the 3
+        pixel rows of ink nearest the line: a stroke that crosses the line is a few px
+        wide there; an arc that merely touches the line runs along it."""
+        band = P[max(0, y_line - gap):y_line] if above else P[y_line:y_line + gap]
+        rows_with_ink = np.nonzero(band.any(axis=1))[0]
+        if not len(rows_with_ink):
+            return []
+        near = rows_with_ink[-3:] if above else rows_with_ink[:3]
+        cols = band[near].any(axis=0)
+        out, x = [], 0
+        while x < len(cols):
+            if cols[x]:
+                x1 = x
+                while x1 + 1 < len(cols) and cols[x1 + 1]:
+                    x1 += 1
+                if x1 - x + 1 <= 16:
+                    out.append((x + x1) / 2)
+                x = x1 + 1
+            else:
+                x += 1
+        return out
+
+    def continues(a, b, y_line):
+        xa, xb = crossings(a, y_line, True), crossings(b, y_line, False)
+        return any(abs(p - q) <= 12 for p in xa for q in xb)
+
+    def own_answer(P, band):
+        """Does this piece on its own surround a printed word of its own row?"""
+        return _encloses_word(P, rows[band]["words"], rx0, ry0, s) is not None
+
     merged = True
     while merged:
         merged = False
         for i in range(len(pieces)):
             for j in range(len(pieces)):
-                if i == j or abs(pieces[i][0] - pieces[j][0]) != 1:
+                bi, bj = pieces[i][0], pieces[j][0]
+                if bj != bi + 1:
                     continue
-                a, b = pieces[i][1], pieces[j][1]
+                a, b = pieces[i][1], pieces[j][1]          # a above the line, b below
+                if not continues(a, b, bounds[bj]):
+                    continue
+                # two marks that each surround a word of their own row are two answers
+                if own_answer(a, bi) and own_answer(b, bj):
+                    continue
                 small, big = (a, b) if a.sum() <= b.sum() else (b, a)
-                if small.sum() >= s.spill_merge_ratio * big.sum():
+                join = small.sum() < s.spill_merge_ratio * big.sum()        # a small spill
+                if not join:
+                    cu, ru = _ring_quality(a | b)
+                    join = (ru >= s.circle_ring and cu >= s.circle_coverage
+                            and cu >= max(_ring_quality(a)[0], _ring_quality(b)[0]) + 0.05)
+                if not join:
                     continue
-                if not (cv2.dilate(small.astype(np.uint8), touch).astype(bool) & big).any():
-                    continue
-                keep = i if b is small else j
+                keep = i if big is a else j
                 drop = j if keep == i else i
                 pieces[keep][1] = a | b
                 pieces.pop(drop)
@@ -478,7 +656,7 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
     ry1 = min(H, max(r["box"][3] for r in rows) + int(0.5 * row_h))
     sub = ctx.maps.added[ry0:ry1, rx0:rx1]
 
-    groups = _row_aware_groups(sub, rows, ry0, s)
+    groups = _row_aware_groups(sub, rows, ry0, s, rx0)
 
     per_row: list[list[Mark]] = [[] for _ in rows]
     stray = [0 for _ in rows]
@@ -555,6 +733,12 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
                 if spill:
                     note = f"circle around {best} overlaps the {'/'.join(spill)} cell"
                 m = Mark((gx0, gy0, gx1, gy1), ink, "circle", best, conf, enclosure, note)
+        elif best and enclosure[best] >= 0.8 and second < s.enclose_min and coverage >= 0.35 \
+                and ring >= s.circle_ring:
+            # an open circle (cut where it crossed a printed line) clearly drawn around one
+            # word, and around no other
+            m = Mark((gx0, gy0, gx1, gy1), ink, "partial-circle", best, 0.8, enclosure,
+                     f"circle around {best} is not closed (crosses a printed line)")
         elif sum(v >= s.enclose_min for v in enclosure.values()) >= 2:
             both = [o for o in ranked if enclosure[o] >= s.enclose_min]
             m = Mark((gx0, gy0, gx1, gy1), ink, "circle", None, 0.3, enclosure,

@@ -370,6 +370,7 @@ def page_template(pdf: Path, page_no: int, out_dir: Path, stem: str) -> dict:
                        "overrides": dict(SIGN_OVERRIDES)})
         add(sid, top + 0.5, {"id": f"{sid}.date", "label": f"Section {sid} completed by - date",
                              "type": "date", "box": db, "read": True, "rule_ref": refs(sid, "signoff"),
+                             "value": {"format": "date", "presence_only": True},
                              "overrides": dict(SIGN_OVERRIDES)})
 
     # ---------------- header fields: printed label -> value cell to its right -- #

@@ -286,7 +286,9 @@ def _apply_value(f: Finding, item: Item, fmt: str, res, s: Settings, is_details:
         return
     f.value_read = res.text
     if res.illegible or not res.text.strip():
-        if not is_details or f.expected == "filled":
+        if item.presence_only and not is_details:
+            f.notes.append("written, but the reader could not read it (only presence is checked)")
+        elif not is_details or f.expected == "filled":
             f.escalate("REVIEW", "Handwriting present but not legible to the reader - check")
         return
     if is_details:
@@ -314,7 +316,10 @@ def _apply_value(f: Finding, item: Item, fmt: str, res, s: Settings, is_details:
         else:
             f.escalate("REVIEW", f"Value '{v.raw}' is {v.problem} - check")
     elif res.confidence < s.ocr_min_conf:
-        f.escalate("REVIEW", f"Read with low confidence as '{v.raw}' - verify")
+        if item.presence_only:
+            f.notes.append(f"read with low confidence as '{v.raw}' (only presence is checked)")
+        else:
+            f.escalate("REVIEW", f"Read with low confidence as '{v.raw}' - verify")
 
 
 # --------------------------------------------------------------------------- #

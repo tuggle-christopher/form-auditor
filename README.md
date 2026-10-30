@@ -358,6 +358,9 @@ names your form's items:
 - `edge_cases.py` fills complete forms with every situation in the rules (228 checks).
 - `reader_fusion_test.py` covers messy writing: faint writing, writing out of or beside
   boxes, a faint circle, a heavy signature, a sagging line.
+- `big_circles_test.py` covers big circles: ones that cross row lines into the rows
+  above and below, ones cut by a line, a circle whose edge passes between Yes and No, and
+  a tight circle around NA.
 
 Both are written for the current form, so after a new version, update the item ids they
 use.

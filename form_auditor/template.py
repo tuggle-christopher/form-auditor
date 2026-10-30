@@ -84,6 +84,9 @@ class Item:
     rule_ref_map: dict[str, str] = field(default_factory=dict)   # outcome -> rule id (choices)
     read: bool = False                  # transcribe the handwriting (OCR)
     value_format: str = "text"          # text | id | date | time | number
+    presence_only: bool = False         # only presence is audited (e.g. sign-off dates): the
+                                        # value is read and reported, but an unsure or
+                                        # unreadable reading is a note, not a REVIEW
     allow_na: bool = False              # a written "NA" is an acceptable value
     overrides: dict = field(default_factory=dict)
 
@@ -260,6 +263,9 @@ def load_template(path: str | Path, base: Settings | None = None,
                 if item.value_format not in VALUE_FORMATS:
                     raise ValueError(f"{where}: unknown value format '{item.value_format}'")
                 item.allow_na = bool(val.get("allow_na", False))
+                # sign-off dates (a date beside a signature in the same section) need only
+                # be present; templates may also say so explicitly
+                item.presence_only = bool(val.get("presence_only", False))
                 if itype == "choice":
                     item.printed = {str(k): _parse_box(v, f"{where}:printed {k}", False)
                                     for k, v in (it.get("printed") or {}).items()}
@@ -270,6 +276,11 @@ def load_template(path: str | Path, base: Settings | None = None,
                         item.details.read = bool(d.get("read", False))
                         item.details.rule_refs = _as_list(d.get("rule_ref"))
                 items.append(item)
+            if any(i.type == "signature" for i in items):
+                for i in items:
+                    if i.type == "date" and "presence_only" not in ((next(
+                            (x for x in s.get("items", []) if str(x["id"]) == i.id), {}).get("value")) or {}):
+                        i.presence_only = True
             sections.append(Section(id=sid, title=str(s.get("title", sid)), items=items))
 
         pages.append(TemplatePage(page_id=page_id, image_path=img_path,
