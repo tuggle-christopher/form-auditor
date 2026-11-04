@@ -98,24 +98,30 @@ and marks the rules nothing on this version of the form uses as "not checked".
 | status | meaning |
 |---|---|
 | **FAIL** | a rule is broken: this is the "flag" from the rules |
-| **REVIEW** | the machine is not sure (two answers, a mark hidden under an annotation, a faint mark, unreadable handwriting...). A person must look. Nothing uncertain is ever passed silently. |
+| **REVIEW** | the machine is not sure (a mark it can't place, a mark hidden under an annotation, a faint mark, unreadable handwriting...). A person must look. Nothing uncertain is ever passed silently. |
 | **PASS** | the rule is satisfied |
 | **SKIP** | the check depends on something unreadable (e.g. the details rule when the answer is unclear), or is recorded only |
 | **UNRECOGNISED** (page) | the page is not a page of a known form version (e.g. a new version before its template exists, or other paperwork). It is not audited and not counted as a failure. |
 
 ### How the answers are read
 
-- **Circle:** the printed word it is drawn around is the answer. If a circle overlaps Yes
-  and No, the word it is centred on wins (with a note). A mark surrounding both words
-  equally → REVIEW.
+- **Circle:** the printed word it is drawn around is the answer. A circle that runs over
+  a cell line or a row line into a neighbouring cell is fine as long as it doesn't touch
+  another printed option (noted only). If a circle overlaps Yes and No, the word it is
+  centred on wins (with a note); if its line runs over the other printed word → REVIEW.
 - **Tick or X instead of a circle:** that cell's option is chosen, with a note.
 - **Circled and then crossed out (cancel):** the option is withdrawn.
   - If another option is circled, that one is the answer. For example, Yes circled and
     crossed out plus No circled gives **No**, with the note "Yes was cancelled".
   - If the crossed-out option was the only mark, the row has no valid answer → REVIEW.
   - Change this with `--cancel-means selected` (still counts) or `--cancel-means review`.
-- **Two answers:** REVIEW.
+- **Two or more options marked** (two circles, a circle and a tick, or one circle round
+  both words): FAIL, "more than one option marked". If every option marked forbids
+  details (e.g. Yes and NA) and the details column has writing, that is a FAIL too.
 - **A circle cut where it crosses printed text or a row line:** the pieces are re-joined.
+- **Ink from a neighbouring row's circle:** the part of a circle (or its tail) that crosses
+  the row line into the next row is ignored there, unless it runs over a printed option of
+  that row → REVIEW.
 - **NA checkboxes:** any pen mark in or on the box counts as ticked, a small faint mark →
   REVIEW.
 
@@ -123,6 +129,9 @@ Details handwriting:
 
 - Lines of writing go to the row that holds most of their ink, so writing that
   overlaps into the next row counts for the row it was written for.
+- Writing in a row's details cell that starts right under the row above's writing may be
+  that row's text running on. That is checked by a person (REVIEW) only when the row
+  above may have details (e.g. it is a No); otherwise the writing is a FAIL either way.
 - Writing that runs past the right edge is included.
 - Stray marks beside the form are ignored.
 
@@ -364,6 +373,12 @@ names your form's items:
 
 Both are written for the current form, so after a new version, update the item ids they
 use.
+
+## Comparing with an AI model
+
+`tools/ai_audit.py` gives an AI model (Azure OpenAI, Claude, or a chat window such as
+Copilot) the same pages, checklist and rules, and writes its verdicts in the same format;
+`tools/compare_results.py` lines both up check by check. See `tools/README_tools.md`.
 
 ## Known limitations
 

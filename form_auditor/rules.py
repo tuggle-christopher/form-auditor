@@ -176,6 +176,9 @@ def audit_choice(sec: Section, item: Item, rd: ChoiceReading, dr: Optional[Detai
     if rd.state == "none":
         if item.required:
             resp.status, resp.reason = "FAIL", "No response marked"
+    elif rd.state == "multiple":
+        resp.status = "FAIL"
+        resp.reason = f"More than one option marked - only one answer is allowed ({rd.note})"
     elif rd.state == "ambiguous":
         resp.status, resp.reason = "REVIEW", f"Unclear response - {rd.note}"
     elif rd.state == "cancelled":
@@ -230,6 +233,15 @@ def audit_choice(sec: Section, item: Item, rd: ChoiceReading, dr: Optional[Detai
                    "has_content": dr.state == "filled"},
                   rule_refs=list(d.rule_refs), notes=list(dr.notes))
 
+    blank_when = {_norm(x) for x in d.must_be_blank_when}
+    if rd.state == "multiple" and rd.options and dr.state == "filled" \
+            and all(_norm(o) in blank_when for o in rd.options):
+        # every option marked forbids details, so the writing is wrong whichever counts
+        det.status, det.expected = "FAIL", "blank"
+        det.reason = (f"Response is {' and '.join(repr(o) for o in rd.options)} - details column "
+                      f"must be left blank but contains writing")
+        findings.append(det)
+        return findings
     if rd.state != "selected":
         det.status, det.expected = "SKIP", "depends on response"
         det.reason = f"Details rule not applied because response is '{rd.state}'"
@@ -556,6 +568,16 @@ def audit_page(page: TemplatePage, ctx: PageContext, base: Settings,
                         dr.notes = list(dr.notes) + [f"writing right next to the details cell "
                                                      f"('{ft.outside_text}')"]
                         dr.blobs = list(dr.blobs) + [ft.outside_extent]
+                if dr is not None and dr.continuation_of:
+                    # writing that might run on from the row above only needs a person's eye
+                    # when the row above may have details; when it may not either, the
+                    # writing is wrong whichever row it belongs to
+                    prev = next((i for i in sec.items if i.id == dr.continuation_of), None)
+                    pr = choices.get(dr.continuation_of)
+                    if prev is not None and prev.details is not None and pr is not None \
+                            and pr.state == "selected" and _norm(pr.selected) in \
+                            {_norm(x) for x in prev.details.must_be_blank_when}:
+                        dr.continuation_of = None
                 fs = audit_choice(sec, item, choices[item.id], dr, s, ctx)
                 findings += fs
                 det = fs[-1] if fs[-1].check == "details" else None
@@ -657,7 +679,7 @@ def apply_document_rules(template: FormTemplate, pages: dict[str, list[Finding]]
         cb_state = cb.observed if cb else "missing"
         if oth is None:
             ans = f"page {other_page} not in this file"
-        elif oth.status == "SKIP" or oth.observed in ("none", "ambiguous", "cancelled") \
+        elif oth.status == "SKIP" or oth.observed in ("none", "multiple", "ambiguous", "cancelled") \
                 or oth.observed.startswith(("uncertain", "occluded")):
             ans = None
         else:

@@ -36,7 +36,7 @@ from .template import Item
 class Mark:
     bbox: tuple[int, int, int, int]          # template px (x0, y0, x1, y1)
     ink: int
-    kind: str              # circle | partial-circle | tick | cross | cancel | written | speck
+    kind: str              # circle | partial-circle | tick | cross | cancel | written | spill | speck
     option: Optional[str]
     confidence: float
     enclosure: dict = field(default_factory=dict)
@@ -48,13 +48,14 @@ class Mark:
 
 @dataclass
 class ChoiceReading:
-    state: str                    # selected | none | ambiguous | uncertain | occluded | cancelled
+    state: str                    # selected | none | multiple | ambiguous | uncertain | occluded | cancelled
     selected: Optional[str]
     confidence: float
     note: str
     marks: list[Mark] = field(default_factory=list)
     visible: float = 1.0
     stray_ink: float = 0.0
+    options: tuple = ()           # state "multiple": the options marked
 
     @property
     def mark_type(self) -> str:
@@ -71,7 +72,7 @@ class ChoiceReading:
 
     @property
     def has_content(self) -> bool:
-        return self.state in ("selected", "ambiguous", "uncertain", "cancelled") or bool(
+        return self.state in ("selected", "multiple", "ambiguous", "uncertain", "cancelled") or bool(
             [m for m in self.marks if m.kind != "speck"])
 
 
@@ -657,9 +658,96 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
     sub = ctx.maps.added[ry0:ry1, rx0:rx1]
 
     groups = _row_aware_groups(sub, rows, ry0, s, rx0)
+    full = ctx.maps.added
+    gap = s.template_dilate_px + 8
+
+    def runs(band_mask, near_line_first):
+        """x-centres (page px offset applied by the caller) of narrow ink runs in the 3 pixel
+        rows of the band nearest the line: where a stroke crosses the line steeply. An arc
+        that only runs along the line makes a wide run and does not count."""
+        rows_with_ink = np.nonzero(band_mask.any(axis=1))[0]
+        if not len(rows_with_ink):
+            return []
+        near = rows_with_ink[:3] if near_line_first else rows_with_ink[-3:]
+        cols = band_mask[near].any(axis=0)
+        out, x = [], 0
+        while x < len(cols):
+            if cols[x]:
+                x1 = x
+                while x1 + 1 < len(cols) and cols[x1 + 1]:
+                    x1 += 1
+                if x1 - x + 1 <= 16:
+                    out.append((x + x1) / 2)
+                x = x1 + 1
+            else:
+                x += 1
+        return out
+
+    def from_neighbour(ys, xs, ri):
+        """Index of the neighbouring row whose pen stroke crosses the row line into this
+        piece (ys, xs: page px of the piece), or None. A circle drawn over a row line is cut
+        there when the printed line is removed; the part on this side is not a mark of this
+        row. Both sides must meet the line steeply at the same place."""
+        top, bot = rows[ri]["box"][1], rows[ri]["box"][3]
+        if ys.max() - ys.min() > 0.6 * (bot - top):
+            return None                    # spans most of the row: a mark of this row
+        x0, x1 = max(0, int(xs.min()) - 20), int(xs.max()) + 21
+        for nb, line, below in ((ri - 1, top, True), (ri + 1, bot, False)):
+            if not 0 <= nb < len(rows):
+                continue
+            if below:                                   # this piece is below the line
+                mine_y, other_y = (line, line + gap), (line - gap, line)
+            else:
+                mine_y, other_y = (line - gap, line), (line, line + gap)
+            sel = (ys >= mine_y[0]) & (ys < mine_y[1])
+            if sel.sum() < 2:
+                continue
+            mine = np.zeros((gap, x1 - x0), bool)
+            mine[ys[sel] - mine_y[0], np.clip(xs[sel] - x0, 0, x1 - x0 - 1)] = True
+            other = full[max(0, other_y[0]):max(0, other_y[1]), x0:x1]
+            if other.shape[0] == 0 or other.shape[1] == 0:
+                continue
+            # both sides must reach the band erased with the printed line (a stroke that
+            # stops short of the line, like a tick inside the cell, is not cut by it)
+            reach = s.template_dilate_px + 4
+            rows_mine = np.nonzero(mine.any(axis=1))[0]
+            rows_other = np.nonzero(other.any(axis=1))[0]
+            if not len(rows_mine) or not len(rows_other):
+                continue
+            d_mine = rows_mine[0] if below else gap - 1 - rows_mine[-1]
+            d_other = (other.shape[0] - 1 - rows_other[-1]) if below else rows_other[0]
+            if d_mine > reach or d_other > reach:
+                continue
+            a = runs(mine, near_line_first=below)        # this piece meets the line steeply
+            if not a:
+                continue
+            # ...and on the other side a stroke runs on, also steeply, at the same place:
+            # several pixel rows of ink in a narrow column (a circle's side or tail), not an
+            # arc lying along the line
+            deep = full[max(0, line - 2 * gap):line, x0:x1] if below else full[line:line + 2 * gap, x0:x1]
+            for p in a:
+                for q in range(int(p) - 8, int(p) + 9, 4):
+                    c0, c1 = max(0, q - 4), max(0, q + 5)
+                    if deep[:, c0:c1].any(axis=1).sum() >= 8:
+                        return nb
+        return None
+
+    def over_words(ys, xs, r, skip=()):
+        """Printed option words of row r that this ink runs over (its stroke crosses the
+        letters, not just passes near them)."""
+        hit = []
+        for o, wb in r["words"].items():
+            if o in skip:
+                continue
+            dx, dy = 0.15 * (wb[2] - wb[0]), 0.15 * (wb[3] - wb[1])
+            n = int(((xs >= wb[0] + dx) & (xs < wb[2] - dx) & (ys >= wb[1] + dy) & (ys < wb[3] - dy)).sum())
+            if n >= max(8, 0.03 * (wb[2] - wb[0]) * (wb[3] - wb[1])):
+                hit.append(o)
+        return hit
 
     per_row: list[list[Mark]] = [[] for _ in rows]
     stray = [0 for _ in rows]
+    spilled: list[set] = [set() for _ in rows]      # rows whose circle crosses into this one
     for P in groups:
         ink = int(P.sum())
         if ink < s.min_component_px:
@@ -681,7 +769,12 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
         size = max(gx1 - gx0, gy1 - gy0)
         if min(gx1 - gx0, gy1 - gy0) <= 2 * s.sliver_px:
             continue                       # thin straight remnant (border, highlight outline)
+        pys, pxs = ys + ry0, xs + rx0
+        nb = from_neighbour(pys, pxs, ri)
         if ink < s.mark_min_ink or size < 0.6 * word_h:
+            if nb is not None and not over_words(pys, pxs, r):
+                spilled[ri].add(rows[nb]["item"].id)   # a bit of the next row's circle
+                continue
             stray[ri] += ink
             per_row[ri].append(Mark((gx0, gy0, gx1, gy1), ink, "speck", None, 0.0))
             continue
@@ -710,6 +803,18 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
         second = enclosure[ranked[1]] if len(ranked) > 1 else 0.0
 
         is_ring = coverage >= s.circle_coverage and ring >= s.circle_ring
+        if nb is not None and (not enclosure or max(enclosure.values()) < s.enclose_min):
+            # part of a circle from the neighbouring row, cut off where it crossed the row
+            # line: ignored, unless it runs over a printed option of this row
+            hit = over_words(pys, pxs, r)
+            nb_id = rows[nb]["item"].id
+            if not hit:
+                spilled[ri].add(nb_id)
+                continue
+            per_row[ri].append(Mark((gx0, gy0, gx1, gy1), ink, "spill", hit[0], 0.4, enclosure,
+                                    f"the mark from row {nb_id} crosses the row line and runs "
+                                    f"over the printed {'/'.join(hit)} here"))
+            continue
         # centre of the ring (hull centroid) - which cell is the circle drawn around?
         hm = cv2.moments(hull.astype(np.uint8), binaryImage=True)
         hcx = gx0 + (hm["m10"] / hm["m00"] if hm["m00"] else (gx1 - gx0) / 2)
@@ -731,14 +836,21 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
                 note = ""
                 spill = [o for o, v in share.items() if o != best and v >= 0.25]
                 if spill:
-                    note = f"circle around {best} overlaps the {'/'.join(spill)} cell"
+                    note = f"circle around {best} crosses into the {'/'.join(spill)} cell"
+                touched = over_words(pys, pxs, r, skip=(best,))
+                if touched:
+                    conf = 0.5
+                    note = f"circle around {best} also runs over the printed {'/'.join(touched)}"
                 m = Mark((gx0, gy0, gx1, gy1), ink, "circle", best, conf, enclosure, note)
         elif best and enclosure[best] >= 0.8 and second < s.enclose_min and coverage >= 0.35 \
                 and ring >= s.circle_ring:
             # an open circle (cut where it crossed a printed line) clearly drawn around one
             # word, and around no other
-            m = Mark((gx0, gy0, gx1, gy1), ink, "partial-circle", best, 0.8, enclosure,
-                     f"circle around {best} is not closed (crosses a printed line)")
+            touched = over_words(pys, pxs, r, skip=(best,))
+            m = Mark((gx0, gy0, gx1, gy1), ink, "partial-circle", best, 0.5 if touched else 0.8,
+                     enclosure,
+                     f"circle around {best} also runs over the printed {'/'.join(touched)}" if touched
+                     else f"circle around {best} is not closed (crosses a printed line)")
         elif sum(v >= s.enclose_min for v in enclosure.values()) >= 2:
             both = [o for o in ranked if enclosure[o] >= s.enclose_min]
             m = Mark((gx0, gy0, gx1, gy1), ink, "circle", None, 0.3, enclosure,
@@ -810,6 +922,8 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
                         m.note = f"{'/'.join(gone)} circled then {struck[gone[0]]}"
                         sig.append(Mark(m.bbox, 0, "cancel", gone[0], 0.8, note=m.note))
                         marks = marks + [sig[-1]]
+        spills = [m for m in sig if m.kind == "spill"]
+        sig = [m for m in sig if m.kind != "spill"]
         both = [m for m in sig if m.kind == "circle" and m.option is None]
         chosen = [m for m in sig if m.option is not None]
         cancels = [m for m in chosen if m.kind == "cancel"]
@@ -819,15 +933,30 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
             chosen = [m for m in chosen if m.kind != "cancel" and m.option not in withdrawn]
         opts = sorted({m.option for m in chosen})
         notes = [m.note for m in sig if m.note]
+        if spilled[ri]:
+            notes.append(f"ink from the circle in row {'/'.join(sorted(spilled[ri]))} crosses into "
+                         f"this row without touching its options; ignored")
         if s.cancel_mark_means == "withdrawn" and withdrawn and opts:
             notes = [n for n in notes if "crossed out" not in n] + [
                 f"{'/'.join(withdrawn)} was cancelled (crossed out); {'/'.join(opts)} counted"]
 
+        # an option counts as answered on its own by a circle, a tick, a cross or a written
+        # answer, or by an open circle that still surrounds the word (not by an arc piece)
+        firm = {m.option for m in chosen if m.confidence >= 0.6 and (
+            m.kind != "partial-circle" or m.enclosure.get(m.option, 0) >= s.enclose_min)}
         if both:
-            rd = ChoiceReading("ambiguous", None, 0.3, both[0].note, marks, vis, stray_ratio)
+            rd = ChoiceReading("multiple", None, 0.8, both[0].note, marks, vis, stray_ratio,
+                               tuple(sorted({o for m in both for o, v in m.enclosure.items()
+                                             if v >= s.enclose_min} | set(opts))))
         elif len(opts) > 1:
             desc = ", ".join(m.describe() for m in chosen)
-            rd = ChoiceReading("ambiguous", None, 0.3, f"more than one option marked ({desc})",
+            rd = ChoiceReading("multiple" if len(firm) > 1 else "ambiguous", None,
+                               0.8 if len(firm) > 1 else 0.3,
+                               f"more than one option marked ({desc})", marks, vis, stray_ratio,
+                               tuple(opts))
+        elif len(opts) == 1 and spills:
+            o = opts[0]
+            rd = ChoiceReading("uncertain", o, 0.5, "; ".join(m.note for m in spills),
                                marks, vis, stray_ratio)
         elif len(opts) == 1:
             o = opts[0]
@@ -855,6 +984,9 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
             if vis < s.min_visible_frac or word_vis < s.min_visible_frac:
                 rd = ChoiceReading("occluded", None, 0.2,
                                    f"no visible mark; response area {1 - vis:.0%} obscured",
+                                   marks, vis, stray_ratio)
+            elif spills:
+                rd = ChoiceReading("uncertain", None, 0.3, "; ".join(m.note for m in spills),
                                    marks, vis, stray_ratio)
             elif stray_ratio > s.mark_lo:
                 rd = ChoiceReading("uncertain", None, 0.3,
