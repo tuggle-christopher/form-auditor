@@ -103,6 +103,18 @@ and marks the rules nothing on this version of the form uses as "not checked".
 | **SKIP** | the check depends on something unreadable (e.g. the details rule when the answer is unclear), or is recorded only |
 | **UNRECOGNISED** (page) | the page is not a page of a known form version (e.g. a new version before its template exists, or other paperwork). It is not audited and not counted as a failure. |
 
+### Finding out why a row was read the way it was
+
+```bash
+python -m form_auditor explain input/form1.pdf --item E5 -o explain_out
+```
+
+Writes a picture of the row and its neighbours: the page as lined up with the blank, and
+what the tool sees there (pen ink in red, the blank's print in light blue, each mark boxed
+and labelled). It also prints how each mark was read and how far the page and the blank
+still differ around the row. The `marks` column of `all_findings.csv` lists the same marks
+with their positions.
+
 ### How the answers are read
 
 - **Circle:** the printed word it is drawn around is the answer. A circle that runs over

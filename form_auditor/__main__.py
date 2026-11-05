@@ -1,6 +1,7 @@
 """CLI.
 
   python -m form_auditor audit  INPUT [INPUT ...] -o audit_out [--ocr azure]
+  python -m form_auditor explain input/form1.pdf --item E5 -o explain_out
   python -m form_auditor preview   templates/form.yaml -o preview.png
   python -m form_auditor render    blank_form.pdf -o templates/
   python -m form_auditor calibrate templates/form.yaml   (desktop only - needs a GUI)
@@ -102,6 +103,17 @@ def main(argv=None) -> int:
     c.add_argument("--only", help="only boxes whose description starts with this, e.g. B3")
     c.add_argument("--redo", action="store_true", help="redraw boxes that already exist")
     c.set_defaults(func=lambda a: calibrate(Path(a.yaml), a.only, a.redo) or 0)
+
+    e = sub.add_parser("explain", help="show why rows are read the way they are (picture + marks)")
+    e.add_argument("inputs", nargs="+", help="PDF / image files or folders")
+    e.add_argument("--item", nargs="+", required=True, help="item id(s), e.g. E5 B3")
+    e.add_argument("--page", type=int, default=None, help="only this page of each file")
+    e.add_argument("-o", "--out", default="explain_out")
+    e.add_argument("-t", "--template", nargs="+", default=None)
+    def _explain(a):
+        from .explain import explain
+        return explain(a.inputs, a.item, a.out, a.template, a.page)
+    e.set_defaults(func=_explain)
 
     v = sub.add_parser("preview", help="draw all template boxes on the blank page")
     v.add_argument("yaml")
