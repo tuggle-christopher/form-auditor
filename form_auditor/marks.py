@@ -219,6 +219,7 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
         return bool(((xs_ >= ix0) & (xs_ <= ix1) & (ys_ >= iy0) & (ys_ <= iy1)).any())
 
     reach = {"A": [np.inf, -np.inf], "B": [np.inf, -np.inf]}
+    one_stroke = {"A": False, "B": False}
     strike = False
     straight = []                     # strokes through the word: removed before the ring test
     for xa, ya, xb, yb in segs.reshape(-1, 4).astype(float):
@@ -232,6 +233,8 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
             reach[cls][0] = min(reach[cls][0], xa, xb)
             reach[cls][1] = max(reach[cls][1], xa, xb)
             straight.append((xa, ya, xb, yb))
+            if min(xa, xb) <= px_ - 0.3 * ww and max(xa, xb) >= px_ + 0.3 * ww:
+                one_stroke[cls] = True
         elif (ang <= 12 or ang >= 168) and d <= 0.25 * wh and length >= 0.9 * ww:
             strike = True
             straight.append((xa, ya, xb, yb))
@@ -261,11 +264,34 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
 
     def present(c):
         return reach[c][1] > reach[c][0] or c in present_short
+
+    def bridged(c):
+        """Is this diagonal really one line across the word whose middle was removed with
+        the print? Then a long straight piece of it is left on EACH side of the word. Two
+        strokes that only happen to line up - the starting hook of a circle on one side and
+        a bit of the circle's own edge on the other - leave a short piece on one side."""
+        left = right = 0.0
+        for xa, ya, xb, yb in straight:
+            ang = math.degrees(math.atan2(-(yb - ya), xb - xa)) % 180
+            if ("A" if 20 <= ang <= 70 else "B" if 110 <= ang <= 160 else None) != c:
+                continue
+            L = math.hypot(xb - xa, yb - ya)
+            if min(xa, xb) < px_ - 0.1 * ww and max(xa, xb) > px_ + 0.1 * ww:
+                return True                # one piece runs across the middle of the word
+            if (xa + xb) / 2 < px_:
+                left = max(left, L)
+            else:
+                right = max(right, L)
+        return min(left, right) >= s.slash_piece_min * ww
+
     if (spans("A") and present("B")) or (spans("B") and present("A")):
         how = "crossed out"
-    elif spans("A") or spans("B"):
-        # a single straight slash right across the word (a tick's long arm starts at its
-        # vertex near the word's middle, so it never reaches past both sides)
+    elif one_stroke["A"] or one_stroke["B"] or (spans("A") and bridged("A")) \
+            or (spans("B") and bridged("B")):
+        # a single straight slash right across the word: one stroke, or a long piece of it
+        # left on each side of the letters (a tick's long arm starts at its vertex near the
+        # word's middle, so it never reaches past both sides; a circle's starting hook and
+        # its far edge leave a short piece on one side)
         how = "crossed out (slash)"
     elif strike:
         how = "struck through"
