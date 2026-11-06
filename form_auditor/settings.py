@@ -79,6 +79,9 @@ class Settings:
     circle_coverage: float = 0.5          # share of directions around its centre a ring covers
     circle_ring: float = 0.7              # share of its ink lying near its outline
     enclose_min: float = 0.5              # share of a printed word inside the circle
+    circle_min_ink: float = 0.45          # a 'circle' with less than this share of the ink a
+                                          # circle round the word would have, and ink only
+                                          # beside the word's ends, is not a circle
     strike_rule_band_px: int = 4          # cross-out test ignores ink this close to table rules
     strike_erase_px: int = 9              # width of the crossing strokes removed before
                                           # testing for a circle around a crossed-out word

@@ -315,6 +315,22 @@ def _ring_coverage(ink: np.ndarray, cx: float, cy: float, ww: float, wh: float,
     return float((hit >= 2).mean())
 
 
+def _sides_only(ink: np.ndarray, cx: float, cy: float, ww: float, wh: float) -> bool:
+    """True when the ink around a word lies only beyond its left and right ends - nothing
+    above or below it, as with '(' and ')' hugging the word. Even a circle drawn tight on
+    the letters (most of it lost where it crosses the print) keeps some arc above or below."""
+    ys, xs = np.nonzero(ink)
+    if len(xs) == 0:
+        return True
+    dx, dy = (xs - cx) / max(ww / 2, 1), (ys - cy) / max(wh / 2, 1)
+    r = np.hypot(dx, dy)
+    keep = r >= 0.8
+    if not keep.any():
+        return True
+    vertical = np.abs(dy[keep]) / r[keep] > 0.85        # straight above or below the centre
+    return int(vertical.sum()) < 3
+
+
 def _is_tick(L: np.ndarray) -> bool:
     """Check mark: from its lowest point, arms rise on BOTH sides (a V / check shape)."""
     ys, xs = np.nonzero(L)
@@ -748,6 +764,7 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
     per_row: list[list[Mark]] = [[] for _ in rows]
     stray = [0 for _ in rows]
     spilled: list[set] = [set() for _ in rows]      # rows whose circle crosses into this one
+    outline: list[set] = [set() for _ in rows]      # words with only bits of ink beside them
     for P in groups:
         ink = int(P.sum())
         if ink < s.min_component_px:
@@ -815,6 +832,20 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
                                     f"the mark from row {nb_id} crosses the row line and runs "
                                     f"over the printed {'/'.join(hit)} here"))
             continue
+        if best and enclosure[best] >= s.enclose_min:
+            # far too little ink for a circle round the word, and only beside its ends
+            # (e.g. '(' and ')' hugging the word), nothing above or below: not a circle. This is what
+            # print left over looks like where a form is printed slightly differently from
+            # the blank (bolder, larger); a real circle has ink all the way round
+            wb = r["words"][best]
+            ww, wh = wb[2] - wb[0], wb[3] - wb[1]
+            a_, b_ = ww / 2 + 6, wh / 2 + 6
+            perim = np.pi * (3 * (a_ + b_) - np.sqrt((3 * a_ + b_) * (a_ + 3 * b_)))
+            if ink < s.circle_min_ink * 3 * perim and _sides_only(
+                    L, (wb[0] + wb[2]) / 2 - gx0, (wb[1] + wb[3]) / 2 - gy0, ww, wh):
+                stray[ri] += ink
+                outline[ri].add(best)
+                continue
         # centre of the ring (hull centroid) - which cell is the circle drawn around?
         hm = cv2.moments(hull.astype(np.uint8), binaryImage=True)
         hcx = gx0 + (hm["m10"] / hm["m00"] if hm["m00"] else (gx1 - gx0) / 2)
@@ -933,6 +964,9 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
             chosen = [m for m in chosen if m.kind != "cancel" and m.option not in withdrawn]
         opts = sorted({m.option for m in chosen})
         notes = [m.note for m in sig if m.note]
+        if outline[ri]:
+            notes.append(f"small bits of ink beside the printed {'/'.join(sorted(outline[ri]))} "
+                         f"are not a circle (too little ink, nothing above or below the word); ignored")
         if spilled[ri]:
             notes.append(f"ink from the circle in row {'/'.join(sorted(spilled[ri]))} crosses into "
                          f"this row without touching its options; ignored")
