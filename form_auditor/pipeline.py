@@ -172,6 +172,11 @@ class Auditor:
         rt, ctx = res.runtime, res.ctx
         res.findings = audit_page(rt.page, ctx, rt.template.settings, self.ocr, where=res.where,
                                   page_text=res.page_text)
+        from .version_check import check_version
+        known = {v: t.display_name for t in self.templates for v in t.versions}
+        vf = check_version(rt, res.page_text, ctx.shape, known)
+        if vf is not None:
+            res.findings.insert(0, vf)
         if res.debug_dir is not None:
             self._write_debug(res.debug_dir, res.page, rt, ctx.maps, res.findings)
         res.ctx = res.page = None                         # free memory

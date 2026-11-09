@@ -4,7 +4,7 @@
 # MAGIC
 # MAGIC Audits every PDF / image in **Input** and writes to **Output**:
 # MAGIC - an annotated copy of each file (problems boxed and numbered);
-# MAGIC - CSV reports: `all_findings.csv`, `batch_summary.csv`, `extracted_data.csv`, `rule_summary.csv`.
+# MAGIC - CSV reports: `document_report.csv` (one row per document), `all_findings.csv`, `batch_summary.csv`, `extracted_data.csv`, `rule_summary.csv`.
 # MAGIC
 # MAGIC **Paths** can be:
 # MAGIC - `https://<account>.blob.core.windows.net/<container>/<folder>`, using the storage credentials in `.env`;
@@ -81,6 +81,12 @@ import pandas as pd  # noqa: E402
 if result["stopped"]:
     print("STOPPED:", result["stopped"])
 print(f"Reports written to {result['out']}")
+# one row per document: Section A values, version check, total fails and fails per section
+docs = pd.DataFrame(result["documents"])
+for _, d in docs.iterrows():
+    if str(d.get("version_status", "")).startswith(("NOT RECOGNISED", "FORM NOT RECOGNISED")):
+        print(f"FORM VERSION NOT RECOGNISED: {d['file']} - {d['version_status']}")
+display(docs)
 display(pd.DataFrame(result["summary"]))
 
 # COMMAND ----------

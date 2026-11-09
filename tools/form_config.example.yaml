@@ -3,7 +3,11 @@
 
 form_id: FORM-ID                  # shown in the reports
 name: My checklist
-version: ""                       # shown in reports; --version on the command line overrides it
+version: ""                       # the printed version(s) this template accepts, e.g. "31.1"
+                                  # (comma-separated for several); a filled form showing another
+                                  # version is reported as "version not recognised". A version
+                                  # printed on the blank is added automatically. --version overrides.
+version_label: "Document ID"      # the printed line that carries the version ("Document ID: ... v31.1")
 output_stem: form                 # -> templates/form.yaml, form_p1.png, ...
 rules_csv: form_rules.csv         # rule texts quoted in the reports (put it in templates/)
 

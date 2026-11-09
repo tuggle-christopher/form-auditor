@@ -17,7 +17,8 @@ from .env import PROJECT_ROOT, load_env
 from .io_utils import iter_input_files
 from .ocr import FatalOcrError, make_engine
 from .pipeline import Auditor
-from .report import FINDING_COLUMNS, RULE_SUMMARY_COLUMNS, SUMMARY_COLUMNS, rule_summary, write_csv
+from .report import (FINDING_COLUMNS, RULE_SUMMARY_COLUMNS, SUMMARY_COLUMNS, document_report,
+                     rule_summary, write_csv)
 from .settings import Settings
 from .storage import local_output_dir, stage_inputs, upload
 from .template import load_template
@@ -125,6 +126,8 @@ def run_audit(inputs: list[str | Path] | str | Path,
         write_csv(out_local / "all_findings.csv", rows_all, FINDING_COLUMNS)
         write_csv(out_local / "batch_summary.csv", summary_all, SUMMARY_COLUMNS)
         write_csv(out_local / "extracted_data.csv", records_all)
+        documents, doc_cols = document_report(tpls, rows_all, summary_all, records_all)
+        write_csv(out_local / "document_report.csv", documents, doc_cols)
         rules, inactive = {}, {}
         for t in tpls:
             rules.update(t.rules)
@@ -152,9 +155,13 @@ def run_audit(inputs: list[str | Path] | str | Path,
         "review": sum(s.get("page_status") == "REVIEW" for s in summary_all),
         "unrecognised": sum(s.get("page_status") == "UNRECOGNISED" for s in summary_all),
         "findings": rows_all, "summary": summary_all, "extracted": records_all,
+        "documents": documents,
         "stopped": stopped,
     }
     if verbose:
+        for d in documents:
+            if str(d.get("version_status", "")).startswith(("NOT RECOGNISED", "FORM NOT RECOGNISED")):
+                print(f"  FORM VERSION NOT RECOGNISED: {d['file']} - {d['version_status']}")
         print(f"\n{result['pages']} page(s): {result['failing']} failing, {result['review']} need "
               f"review, {result['unrecognised']} not recognised as a known form page. "
               f"Reports in {out}/" + (f"\nSTOPPED: {stopped}" if stopped else ""))

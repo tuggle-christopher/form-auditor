@@ -61,6 +61,50 @@ result["summary"]        # one dict per page; result["findings"]: one per check
 The project uses the headless OpenCV build (`opencv-python-headless`). If `import cv2`
 fails with `libGL.so.1`, the GUI build is also installed: run `%pip uninstall -y opencv-python`.
 
+## Running it as a web app (Databricks Apps)
+
+`app.py` is a small web page: people upload one or more forms (PDF or photos), click
+**Check forms**, and download the marked-up PDFs and the reports - no notebook needed. It
+runs as a Databricks App, hosted in your workspace; people sign in with their Databricks
+account. Nothing is stored: uploads and results live only in that session.
+
+1. **Make the app folder** (only what the app needs: code, templates, no forms or keys).
+   In a notebook in your repo folder:
+   ```
+   %sh python tools/make_app_bundle.py /Workspace/Users/<you>/form-auditor-app
+   ```
+   Run it again whenever the code or the templates change.
+2. **Store the handwriting reader's details as secrets** (once; Databricks CLI on your
+   laptop, or ask an admin):
+   ```bash
+   databricks secrets create-scope form-auditor
+   databricks secrets put-secret form-auditor adi-endpoint   # https://<resource>.cognitiveservices.azure.com
+   databricks secrets put-secret form-auditor adi-key
+   ```
+3. **Create the app**: Compute > Apps > Create app > custom app (e.g. `form-auditor`).
+   Under its resources, add two **secrets**: `form-auditor` / `adi-endpoint` with the
+   resource key `adi-endpoint`, and `form-auditor` / `adi-key` with the resource key
+   `adi-key` (`app.yaml` reads them by those keys). Without them the app still works,
+   checking boxes for writing without reading it.
+4. **Deploy** with the source code path set to the folder from step 1 - from the app's
+   page (Deploy), or `databricks apps deploy form-auditor --source-code-path /Workspace/Users/<you>/form-auditor-app`.
+5. **Share it**: give the people who audit forms *Can use* on the app.
+
+The default app size (2 CPUs, 6 GB) is plenty; a 3-page form takes about 10-15 seconds.
+For large batches (dozens of forms at once) the notebook or a scheduled job is the better
+tool. To try the app on a laptop: `pip install streamlit`, then `streamlit run app.py`
+(it reads `.env`).
+
+**Your company's look.** Two files, both kept out of git (examples are committed):
+- `.streamlit/config.toml` (copy `config.example.toml`): colours (`primaryColor` for
+  buttons and links, backgrounds, text) and font - including your own font files in
+  `static/`.
+- `branding/branding.yaml` (copy `branding.example.yaml`): page title, subtitle, company
+  name, logo (a file in `branding/`), footer, support contact, and an optional extra
+  stylesheet (`css:`) for anything the theme doesn't cover.
+
+`tools/make_app_bundle.py` copies both into the app folder; redeploy to see changes.
+
 ## What is checked
 
 What the auditor checks comes from your form, through three files in `templates/`. All
@@ -232,6 +276,8 @@ a few known forms first and compare.
 
 ```
 <out>/
+  document_report.csv     one row per document: Section A values, form version check,
+                          total fails / reviews and fails per section (every run, even one file)
   all_findings.csv        every check on every page (one row per check)
   extracted_data.csv      one row per form: every value read, every answer, signed / blank
   rule_summary.csv        per rule: checks, fails, reviews, and rules not checked on this form version
@@ -254,6 +300,29 @@ The columns of `all_findings.csv`:
 
 Pages are grouped into forms (page 1 + 2 + 3) in `extracted_data.csv` and in the
 `form_no` column.
+
+`document_report.csv` has one row per document (a form in a file): `file, form_no, form,
+form_status, version_read, version_status, pages, missing_pages`, then one column per
+Section A field (`A: Container number`, ... - the values the handwriting reader read; the
+`report_value_sections` setting picks other sections), `total_fails, total_reviews` and
+`Section A fails` ... `Section E fails`.
+
+### Form version check
+
+Each page's printed version line ("Document ID: ... v31.1") is read by the handwriting
+reader and compared with the versions the template accepts. `version_status` in the report:
+
+| | |
+|---|---|
+| `OK` | the printed version is one the template accepts |
+| `NOT RECOGNISED - ...` | another version is printed (a REVIEW finding on each page says which, and which versions are known) |
+| `FORM NOT RECOGNISED` | no page matches any known form layout - a different form or version |
+| `NOT READ` | the version line could not be read |
+| `NOT CHECKED` | run without the handwriting reader |
+| `NOT SET` | the template names no version: set `version: "31.1"` in `templates/form_config.yaml` and rebuild the template (or add `versions: ["31.1"]` to the template YAML) |
+
+The app shows a "this form version is not recognised" message for each such document, and
+the command line and notebook print one.
 
 ## Options
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import re
 import json
 from pathlib import Path
 from typing import Optional
@@ -225,3 +226,94 @@ def save_pdf(images_bgr: list[np.ndarray], path: Path, dpi: int = 150) -> None:
     pil = [Image.fromarray(cv2.cvtColor(im, cv2.COLOR_BGR2RGB)) for im in images_bgr]
     if pil:
         pil[0].save(path, "PDF", resolution=dpi, save_all=True, append_images=pil[1:])
+
+
+def document_report(templates, findings: list[dict], summary: list[dict],
+                    records: list[dict]) -> tuple[list[dict], list[str]]:
+    """One row per document (a form in a file): its header values (the sections named in
+    the `report_value_sections` setting, Section A by default), the printed version and
+    whether it is known, and how many checks failed - in total and per section.
+    Returns (rows, columns)."""
+    sections, labels, value_items = [], {}, []
+    for t in templates:
+        wanted = {x.strip() for x in str(t.settings.report_value_sections).split(",") if x.strip()}
+        for p in t.pages:
+            for sec in p.sections:
+                if sec.id not in sections:
+                    sections.append(sec.id)
+                if sec.id in wanted:
+                    for it in sec.items:
+                        if it.type != "choice" and it.id not in labels:
+                            labels[it.id] = f"{sec.id}: {re.sub(r'\s*\(.*?\)', '', it.label).strip()}"
+                            value_items.append(it.id)
+    docs: dict[tuple, dict] = {}
+    order = []
+
+    def doc(file, form_no):
+        key = (file, str(form_no or ""))
+        if key not in docs:
+            docs[key] = {"file": file, "form_no": form_no or "", "pages": 0, "unrecognised_pages": 0}
+            order.append(key)
+        return docs[key]
+
+    for s in summary:
+        d = doc(s.get("file", ""), s.get("form_no", ""))
+        d["pages"] += 1
+        if s.get("page_status") == "UNRECOGNISED":
+            d["unrecognised_pages"] += 1
+        elif s.get("page_status") == "ERROR":
+            d["error"] = s.get("note", "")
+    by_doc: dict[tuple, list] = {}
+    for r in findings:
+        by_doc.setdefault((r.get("file", ""), str(r.get("form_no", "") or "")), []).append(r)
+    rec_by = {(r.get("file", ""), str(r.get("form_no", "") or "")): r for r in records}
+
+    rows = []
+    for key in order:
+        d, fs, rec = docs[key], by_doc.get(key, []), rec_by.get(key, {})
+        known_pages = d["pages"] - d["unrecognised_pages"]
+        vrows = [r for r in fs if r.get("check") == "form_version"]
+        reads = sorted({r.get("observed", "") for r in vrows if r.get("observed", "").startswith("v")})
+        if known_pages == 0:
+            vstatus = "FORM NOT RECOGNISED - matches no known form or version"
+        elif any(r.get("status") == "REVIEW" and r.get("observed", "").startswith("v") for r in vrows):
+            bad = next(r for r in vrows if r.get("status") == "REVIEW" and r.get("observed", "").startswith("v"))
+            vstatus = f"NOT RECOGNISED - {bad.get('reason', '')}"
+        elif any(r.get("observed") == "unreadable" for r in vrows) and not reads:
+            vstatus = "NOT READ - the version could not be read on the page"
+        elif vrows and all(r.get("status") == "SKIP" for r in vrows):
+            vstatus = "NOT CHECKED - needs the handwriting reader"
+        elif not vrows:
+            vstatus = "NOT SET - the template names no version"
+        else:
+            vstatus = "OK"
+        if d["unrecognised_pages"] and known_pages:
+            vstatus += f" ({d['unrecognised_pages']} page(s) not recognised)"
+        fails = [r for r in fs if r.get("status") == "FAIL"]
+        reviews = [r for r in fs if r.get("status") == "REVIEW"]
+        if d.get("error"):
+            status = "ERROR"
+        elif known_pages == 0:
+            status = "NOT RECOGNISED"
+        else:
+            status = rec.get("form_status") or ("FAIL" if fails else "REVIEW" if reviews else "PASS")
+        row = {"file": d["file"], "form_no": d["form_no"], "form": rec.get("template", ""),
+               "form_status": status, "version_read": " / ".join(reads),
+               "version_status": vstatus, "pages": d["pages"],
+               "missing_pages": rec.get("missing_pages", "")}
+        for iid in value_items:
+            row[labels[iid]] = rec.get(iid, "")
+        row["total_fails"] = len(fails)
+        row["total_reviews"] = len(reviews)
+        for sid in sections:
+            row[f"Section {sid} fails"] = sum(r.get("section") == sid for r in fails)
+        other = sum(r.get("section") not in sections for r in fails)
+        if other:
+            row["Other fails"] = other
+        row["note"] = d.get("error", "")
+        rows.append(row)
+    cols = (["file", "form_no", "form", "form_status", "version_read", "version_status", "pages",
+             "missing_pages"] + [labels[i] for i in value_items] + ["total_fails", "total_reviews"]
+            + [f"Section {s} fails" for s in sections]
+            + (["Other fails"] if any("Other fails" in r for r in rows) else []) + ["note"])
+    return rows, cols

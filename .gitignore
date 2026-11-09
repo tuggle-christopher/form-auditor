@@ -30,6 +30,13 @@ extracted_data.csv
 batch_summary.csv
 rule_summary.csv
 debug/
+ai_out/
+*_ai_audit.csv
+ai_findings.csv
+*_ai_response.json
+*_ai_answer.json
+*_prompt.txt
+comparison*.csv
 
 # ---- Tests that name your form's items, and test output ----------------
 local_tests/
@@ -44,3 +51,9 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# the web app's company look (keep the examples)
+.streamlit/config.toml
+branding/*
+!branding/branding.example.yaml
+static/

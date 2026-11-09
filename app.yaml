@@ -1,0 +1,10 @@
+# Databricks App: how to start the web app (app.py) and where its settings come from.
+# The handwriting reader's endpoint and key are Databricks secrets, added to the app as
+# resources with the keys below (app settings > Resources > Add > Secret). Nothing secret
+# is written in this file.
+command: ["streamlit", "run", "app.py"]
+env:
+  - name: AZURE_DI_ENDPOINT
+    valueFrom: "adi-endpoint"
+  - name: AZURE_DI_KEY
+    valueFrom: "adi-key"

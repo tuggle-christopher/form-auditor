@@ -84,6 +84,8 @@ class Settings:
                                           # beside the word's ends, is not a circle
     strike_rule_band_px: int = 4          # cross-out test ignores ink this close to table rules
     strike_erase_px: int = 9              # width of the crossing strokes removed before
+    report_value_sections: str = "A"     # sections whose written values go into the
+                                          # per-document report (comma-separated)
     slash_piece_min: float = 0.35         # a single slash (no X) needs a straight piece at least
                                           # this share of the word's width on each side of it
                                           # testing for a circle around a crossed-out word

@@ -1,0 +1,28 @@
+# The web app's look (Streamlit theme). Copy to .streamlit/config.toml and put your
+# company's colours and fonts in; config.toml is kept out of git. Colours are hex.
+[theme]
+base = "light"
+primaryColor = "#1F4E79"              # buttons, links, selected items: your main brand colour
+backgroundColor = "#FFFFFF"           # page background
+secondaryBackgroundColor = "#F2F4F7"  # sidebar, tables, input boxes
+textColor = "#1A1A1A"                 # body text
+font = "sans serif"                   # "sans serif", "serif", "monospace" - or a font
+                                      # declared below (Streamlit 1.46 or later)
+
+# A company font from a file in static/ (enable static files below), e.g.:
+# [[theme.fontFaces]]
+# family = "CompanySans"
+# url = "app/static/CompanySans-Regular.woff2"
+# weight = 400
+# [[theme.fontFaces]]
+# family = "CompanySans"
+# url = "app/static/CompanySans-Bold.woff2"
+# weight = 700
+# ...then set font = "CompanySans" above.
+
+[server]
+enableStaticServing = true            # serves files in static/ (fonts, images)
+maxUploadSize = 200                   # MB per upload
+
+[browser]
+gatherUsageStats = false

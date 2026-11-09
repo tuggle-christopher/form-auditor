@@ -192,6 +192,26 @@ def refs(sid: str, kind: str, block: str | None = None) -> list[str]:
     return r
 
 
+PRINTED_VERSIONS: list[str] = []          # the version lines found on the blank's pages
+
+
+def version_line(words):
+    """((x0, y0, x1, y1), text) of the line starting with the version label (config
+    `version_label`, default 'Document ID'), or None."""
+    label = str(CFG.get("version_label", "Document ID")).split()
+    for i in range(len(words) - len(label) + 1):
+        if [words[i + k][0].rstrip(":").lower() for k in range(len(label))] == \
+                [x.rstrip(":").lower() for x in label]:
+            b0 = words[i][1]
+            cy, hh = (b0[1] + b0[3]) / 2, b0[3] - b0[1]
+            line = [(t, b) for t, b in words[i:] if abs((b[1] + b[3]) / 2 - cy) < 0.6 * hh
+                    and b[0] >= b0[0] - 2]
+            x0 = min(b[0] for _, b in line); x1 = max(b[2] for _, b in line)
+            y0 = min(b[1] for _, b in line); y1 = max(b[3] for _, b in line)
+            return (x0, y0, x1, y1), " ".join(t for t, _ in line)
+    return None
+
+
 def page_template(pdf: Path, page_no: int, out_dir: Path, stem: str) -> dict:
     bgr, words = render(pdf, page_no)
     h, w = bgr.shape[:2]
@@ -417,6 +437,15 @@ def page_template(pdf: Path, page_no: int, out_dir: Path, stem: str) -> dict:
     img_name = f"{stem}_p{page_no}.png"
     cv2.imwrite(str(out_dir / img_name), bgr)
     page = {"page_id": f"p{page_no}", "template_image": img_name, "sections": sections}
+    # the printed version line ("Document ID: <id> v<version>"): where it is, so the version
+    # printed on a filled form can be read there and compared with the versions this
+    # template accepts. The box runs to the right edge: a longer id or version fits.
+    vl = version_line(words)
+    if vl is not None:
+        (x0, y0, x1, y1), text = vl
+        page["version_box"] = [round(max(0.0, x0 - 6) / w, 4), round(max(0.0, y0 - 6) / h, 4),
+                               0.98, round(min(float(h), y1 + 6) / h, 4)]
+        PRINTED_VERSIONS.append(text)
     if rules:
         page["rules"] = rules
     n_choice = sum(1 for s in sections for i in s["items"] if i["type"] == "choice")
@@ -521,7 +550,22 @@ def main():
     pages = [page_template(Path(a.pdf), p, out.parent, out.stem) for p in page_nos]
 
     version = a.version if a.version is not None else str(CFG.get("version", ""))
-    tpl = {"form_id": str(CFG["form_id"]), "version": version, "name": str(CFG["name"]),
+    # versions this template accepts: --version / the config's (comma-separated), plus a
+    # version printed on the blank itself ("... v31.1")
+    versions = [v.strip() for v in re.split(r"[,;]", version) if v.strip()]
+    for text in PRINTED_VERSIONS:
+        m = re.search(r"\bv\s?(\d+(?:\.\d+)*)\b", text, re.I)
+        if m and m.group(1) not in versions:
+            versions.append(m.group(1))
+    if PRINTED_VERSIONS:
+        print(f"  version line on the blank: '{PRINTED_VERSIONS[0]}'"
+              + ("" if versions else " - no version found on it; set `version` in the config "
+                 "(e.g. version: \"31.1\") so forms can be checked against it"))
+    else:
+        print("  no version line found on the blank (config `version_label`); the version "
+              "is then looked for at the top of each page")
+    tpl = {"form_id": str(CFG["form_id"]), "version": versions[0] if versions else "",
+           "versions": versions, "name": str(CFG["name"]),
            "rules_csv": CFG["rules_csv"], "settings": {"render_dpi": DPI, **(CFG.get("settings") or {})},
            "pages": pages}
     # cross-checks between items, added only when the form has both items

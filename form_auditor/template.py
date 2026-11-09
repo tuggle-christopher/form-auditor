@@ -112,6 +112,7 @@ class TemplatePage:
     image_path: Path
     sections: list[Section]
     rules: list[dict] = field(default_factory=list)
+    version_box: Optional[list] = None      # where the printed "Document ID ... vX" line is
     _image: Optional[np.ndarray] = None
 
     @property
@@ -134,6 +135,7 @@ class FormTemplate:
     pages: list[TemplatePage]
     rules: dict[str, RuleRef] = field(default_factory=dict)
     document_rules: list[dict] = field(default_factory=list)   # rules spanning pages
+    versions: list[str] = field(default_factory=list)          # printed versions it accepts
 
     def page_of_item(self, item_id: str) -> Optional[str]:
         for p in self.pages:
@@ -167,7 +169,8 @@ class FormTemplate:
 
     @property
     def display_name(self) -> str:
-        return f"{self.form_id} v{self.version}" if self.version else self.form_id
+        v = self.version or (self.versions[0] if self.versions else "")
+        return f"{self.form_id} v{v}" if v else self.form_id
 
 
 # --------------------------------------------------------------------------- #
@@ -190,6 +193,15 @@ def _as_list(v) -> list[str]:
     if v is None:
         return []
     return [str(x) for x in (v if isinstance(v, list) else [v])]
+
+
+def norm_version(v) -> str:
+    """'v31.1', 'V 31.10', '31.1' -> '31.1' (case, a leading v and trailing zeros ignored)."""
+    t = str(v).strip().lower().lstrip("v").strip()
+    parts = t.split(".")
+    while len(parts) > 1 and parts[-1].isdigit() and int(parts[-1]) == 0:
+        parts.pop()
+    return ".".join(str(int(x)) if x.isdigit() else x for x in parts)
 
 
 def load_template(path: str | Path, base: Settings | None = None,
@@ -283,8 +295,10 @@ def load_template(path: str | Path, base: Settings | None = None,
                         i.presence_only = True
             sections.append(Section(id=sid, title=str(s.get("title", sid)), items=items))
 
+        vb = p.get("version_box")
         pages.append(TemplatePage(page_id=page_id, image_path=img_path,
-                                  sections=sections, rules=p.get("rules", []) or []))
+                                  sections=sections, rules=p.get("rules", []) or [],
+                                  version_box=[float(v) for v in vb] if vb else None))
 
     if not pages:
         raise ValueError(f"{path}: template defines no pages")
@@ -298,11 +312,15 @@ def load_template(path: str | Path, base: Settings | None = None,
             warnings.warn(f"rules CSV not found: {csv_path}")
     document_rules = raw.get("document_rules", []) or []
     _check_rule_items(path, pages, document_rules)
+    versions = raw.get("versions")
+    if versions is None:
+        versions = [v for v in re.split(r"[,;\s]+", str(raw.get("version", "") or "")) if v]
     return FormTemplate(form_id=str(raw.get("form_id", path.stem)),
                         name=str(raw.get("name", "")),
                         version=str(raw.get("version", "")),
                         path=path, settings=settings, pages=pages, rules=rules,
-                        document_rules=document_rules)
+                        document_rules=document_rules,
+                        versions=[norm_version(v) for v in versions if str(v).strip()])
 
 
 # keys of page / document rules that name items of the form

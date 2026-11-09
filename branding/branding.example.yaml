@@ -1,0 +1,13 @@
+# Words and images of the web app. Copy to branding/branding.yaml and fill in; that file
+# and your logo are kept out of git. Colours and fonts live in .streamlit/config.toml.
+app_title: "Form auditor"                  # browser tab and page heading
+subtitle: >-
+  Upload scanned or photographed checklist forms (PDF or photos). Each page is checked
+  against the blank form and the rules: problems are boxed and numbered on the PDF, and the
+  report lists what was checked, where and why.
+company_name: ""                           # shown in the sidebar and footer, e.g. "Acme Ltd"
+logo: ""                                   # file in branding/, e.g. "logo.png" (top left)
+logo_small: ""                             # optional square icon for the collapsed sidebar / tab
+footer: "Files are processed for this session only and are not kept."
+support_contact: ""                        # e.g. "Questions: quality-systems@yourcompany.com"
+css: ""                                    # optional extra stylesheet in branding/, e.g. "style.css"
