@@ -7,7 +7,10 @@ neighbours as lined up with the blank, next to what the tool sees there (the bla
 in light blue, the pen ink it found in red, ink only the sensitive pass found in orange,
 each mark boxed and labelled), and prints how each mark was read. It also measures how far
 the page and the blank still differ around the row: a few pixels or more there means the
-print was not fully removed, and leftover print can look like a mark.
+print was not fully removed, and leftover print can look like a mark. Finally it audits the
+whole file and prints the final result of the item and of everything that bears on it (for a
+part of an item with sub-items: the other parts, the NA box, and the Section B answer that
+says whether the item applies).
 """
 from __future__ import annotations
 
@@ -172,8 +175,48 @@ def explain(inputs: list[str], item_ids: list[str], out_dir: str,
                     found += 1
                     print(f"\n{f.name}")
                     print("\n".join(lines))
+        if found:
+            print_verdicts(aud, f, item_ids)
     if not found:
         print(f"None of {', '.join(item_ids)} found on a recognised page.")
     print("\nThis shows the ink reading only (no handwriting reader); it is what decides "
           "which option is marked.")
     return 0 if found else 1
+
+
+def related_ids(tpl, item_ids: list[str]) -> set[str]:
+    """The items whose results bear on these: an item with sub-items (its block check and
+    NA box), and the cross-checks that decide whether it applies (e.g. B6 for item 5)."""
+    ids = set(item_ids)
+    for p in tpl.pages:
+        for r in p.rules:
+            if r.get("type") != "block":
+                continue
+            members = [str(i) for i in r.get("items", [])]
+            group = set(members) | {str(r.get("item")), str(r.get("na_checkbox"))}
+            if ids & group:
+                ids |= group
+    for r in tpl.document_rules:
+        keys = {str(r[k]) for k in ("checkbox", "block") if r.get(k)}
+        if keys & ids:
+            ids |= {f"rule:{r.get('id')}", str(r.get("item"))} | keys
+    return ids
+
+
+def print_verdicts(aud: Auditor, path: Path, item_ids: list[str]) -> None:
+    """Audit the whole file (all its pages, so rules between pages apply) and print the
+    final result of these items and of the items and rules that bear on them."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        rows, _, _ = aud.audit_file(path, Path(tmp))
+    want = set()
+    for t in aud.templates:
+        want |= related_ids(t, item_ids)
+    rows = [r for r in rows if r.get("item_id") in want]
+    if not rows:
+        return
+    print(f"\nFinal results in {path.name} (whole file, rules between pages included):")
+    for r in rows:
+        print(f"  form {r.get('form_no')} p{r.get('page')} {r.get('item_id')} [{r.get('check')}]: "
+              f"{r.get('status')} - seen: {r.get('observed')}"
+              + (f" - {r.get('reason')}" if r.get("reason") else ""))

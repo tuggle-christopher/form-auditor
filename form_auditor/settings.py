@@ -43,6 +43,8 @@ class Settings:
     recover_halo: bool = False            # experimental: give back pen ink in that margin next to
                                           # pen strokes (better tick/cross shapes, more false marks)
     print_core_px: int = 2                # margin kept around printed strokes when recovering
+    close_look: bool = True               # rows with pen but no clear answer: look again with the
+                                          # print removed tightly (circles drawn over the letters)
     min_component_px: int = 15            # drop specks smaller than this
     sliver_px: int = 3                    # inside a box, ignore marks this thin in either
                                           # direction (fragments of borders / box outlines)

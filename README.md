@@ -114,7 +114,10 @@ three are kept out of git:
   - every box, answer row, checkbox and sign-off on each page;
   - which answers are flagged;
   - when a details column must stay empty;
-  - which items have sub-items (and an NA box);
+  - which items have sub-items (and an NA box). The NA box is found left of the word NA
+    or just above it. An item whose NA box is not found is still checked as one item
+    (all parts or none), and its Section B answer still decides whether it applies; the
+    builder says so when it happens;
   - which items are cross-checked against each other.
 - **`form_config.yaml`**, your settings for the builder: the form id, the header fields,
   which answers are flagged, and the cross-checks.
@@ -130,7 +133,7 @@ The kinds of checks:
 | Answer rows | Exactly one **printed** option (Yes / No / NA) must be marked. NA written in, or circled in an empty cell, is flagged. |
 | Flagged answers | e.g. any **No** → FAIL, optionally only on the first rows of a section. The details read are returned. |
 | Details column | Writing next to an answer that must have empty details (e.g. Yes / NA) → FAIL. |
-| Items with sub-items | e.g. 5.1–5.6 under item 5, with an NA box. With the NA-checkbox rules on, the Section B answer that goes with the item (B6 for item 5, B7 for item 6) says whether it applies. **Applies:** the NA box must be blank, and every part must be filled in (each blank part FAILs). **Doesn't apply:** the NA box must be ticked, and every part must be blank (each filled part FAILs). A wrongly ticked or wrongly blank NA box FAILs as well. If the Section B answer can't be read, the NA box decides which of the two applies. With the rules off, an item that is partly filled in must be complete. Time fields need HH:MM; number fields need a value. |
+| Items with sub-items | e.g. 5.1–5.6 under item 5, with an NA box. With the NA-checkbox rules on, the Section B answer that goes with the item (B6 for item 5, B7 for item 6) says whether it applies. **Applies:** the NA box must be blank, and every part must be filled in (each blank part FAILs). **Doesn't apply:** the NA box must be ticked, and every part must be blank (each filled part FAILs). A wrongly ticked or wrongly blank NA box FAILs as well. If the Section B answer can't be read, the NA box decides which of the two applies. If neither can be read, the parts decide (any part filled in means every part is required) and the NA box goes to REVIEW. Section B and Section D must be in the same file for Section B to count: a file holding only page 2 is checked by its NA box. With the rules off, an item that is partly filled in must be complete. Time fields need HH:MM; number fields need a value. |
 | Cross-checks | e.g. "the NA box of item 5 must be ticked exactly when B6 is No". |
 | Sign-offs | Signature and date must be present. Dates only need to be present; the value is returned (ISO when possible). |
 
@@ -156,8 +159,11 @@ python -m form_auditor explain input/form1.pdf --item E5 -o explain_out
 Writes a picture of the row and its neighbours: the page as lined up with the blank, and
 what the tool sees there (pen ink in red, the blank's print in light blue, each mark boxed
 and labelled). It also prints how each mark was read and how far the page and the blank
-still differ around the row. The `marks` column of `all_findings.csv` lists the same marks
-with their positions.
+still differ around the row. Last, it audits the whole file and prints the final result of
+the item and of everything that bears on it: for a part of an item with sub-items (e.g.
+`--item D5.4`), all the parts, the NA box, and the Section B answer and cross-check that
+decide whether the item applies. The `marks` column of `all_findings.csv` lists the same
+marks with their positions.
 
 ### How the answers are read
 
@@ -165,7 +171,17 @@ with their positions.
   a cell line or a row line into a neighbouring cell is fine as long as it doesn't touch
   another printed option (noted only). If a circle overlaps Yes and No, the word it is
   centred on wins (with a note); if its line runs over the other printed word → REVIEW.
-- **Tick or X instead of a circle:** that cell's option is chosen, with a note.
+- **Tick or X instead of a circle:** that cell's option is chosen, with a note. A mark
+  around the word with arcs both above and below its middle is a circle (broken where it
+  crossed the letters), not an X.
+- **A circle drawn tight, over the printed letters:** most of it goes with the print. A
+  row with pen ink but no clear answer is looked at again with the print removed tightly
+  (only the letters themselves); if that shows a circle round one word, and no ink round
+  the other words (which would mean print left over), that word is the answer, with a
+  note. If too little is left to tell the mark, but the pen is clearly against one word,
+  the row goes to REVIEW ("Yes?") rather than "no response".
+- **Light pen:** a circle whose lighter parts only show in the sensitive ink pass is
+  still a circle (they count when telling a circle from print left over).
 - **Circled and then crossed out (cancel):** the option is withdrawn. Only an obvious
   crossing out counts: an X, a slash or a line straight through the word, reaching past
   both sides of it. The start or end of a circle (a hook, a tail curling in under the word)
@@ -481,7 +497,8 @@ Copilot) the same pages, checklist and rules, and writes its verdicts in the sam
   from real photos of circles that are not cancellations; none of the sample photos has a
   real one. A scribbled-out (blacked-out) option is not specifically recognised.
 - **Ink exactly on a printed line or letter** can't be told apart from the print. Broken
-  circles are re-joined, and extreme cases go to REVIEW.
+  circles are re-joined, and a circle drawn almost entirely over the letters goes to
+  REVIEW ("Yes?") when too little of it is left to see its shape.
 - **Content is not verified**: the tool doesn't know whether a reference number is the right one.
 - **Storage and Azure:** the blob, `abfss://` and Document Intelligence code was tested
   against stand-ins for Azure and `dbutils`, not real resources. In particular, compare

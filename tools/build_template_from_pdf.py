@@ -302,8 +302,26 @@ def page_template(pdf: Path, page_no: int, out_dir: Path, stem: str) -> dict:
             it["details"]["rule_ref"] = []
         add(sid, top, it)
 
-    # ---------------- NA checkboxes ( [ ] NA on a heading row ) ---------- #
+    # ---------------- NA checkboxes ( [ ] NA on or next to a heading row ) - #
+    # The square can be left of the word "NA" or above it (stacked), and the NA can sit in a
+    # cell of its own at the right, level with the item's heading or just above it.
     g = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    def squares(x0, y0, x1, y1):
+        x0, y0, x1, y1 = (max(0, int(v)) for v in (x0, y0, x1, y1))
+        sub = (g[y0:y1, x0:x1] < 160).astype(np.uint8)
+        if sub.size == 0:
+            return []
+        n, _, st, _ = cv2.connectedComponentsWithStats(sub)
+        return [(x + x0, y + y0, ww, hh) for x, y, ww, hh, a in st[1:]
+                if 14 <= ww <= 40 and 14 <= hh <= 40 and abs(ww - hh) <= 6 and a < 0.6 * ww * hh]
+
+    def heading_near(cy, sid):
+        """The item number ("5)") of the heading nearest this height in the section."""
+        cand = [(abs(cy_of(b2) - cy), t2[:-1]) for t2, b2 in words
+                if re.fullmatch(r"\d+\)", t2) and abs(cy_of(b2) - cy) < 150 and section_at(cy_of(b2)) == sid]
+        return min(cand)[1] if cand else None
+
     for t, b in words:
         if t != "NA":
             continue
@@ -312,20 +330,30 @@ def page_template(pdf: Path, page_no: int, out_dir: Path, stem: str) -> dict:
         if any(t2 in ("Yes", "No") and top < cy_of(b2) < bot for t2, b2 in words):
             continue                                   # NA of a Yes/No/NA row
         sid = section_at(cy)
+        if sid is None:
+            continue
         num, label = row_text(top, bot, b[0] - 60)
-        if sid is None or num is None:
-            continue
-        x0 = int(b[0]) - 70
-        sub = (g[int(top) + 3:int(bot) - 3, x0:int(b[0]) - 2] < 160).astype(np.uint8)
-        n, _, st, _ = cv2.connectedComponentsWithStats(sub)
-        sq = [(x + x0, y + int(top) + 3, ww, hh) for x, y, ww, hh, a in st[1:]
-              if 14 <= ww <= 40 and 14 <= hh <= 40 and abs(ww - hh) <= 6 and a < 0.6 * ww * hh]
+        if num is None or "." in num:
+            num = heading_near(cy, sid)
+            if num is None:
+                continue
+            hb = next(b2 for t2, b2 in words if t2 == f"{num})" and section_at(cy_of(b2)) == sid)
+            label = row_text(h_above(H, hb[0], cy_of(hb)), h_below(H, hb[0], cy_of(hb)), b[0] - 60)[1] \
+                or f"item {num}"
+        wh = b[3] - b[1]
+        left = squares(b[0] - 70, b[1] - wh, b[0] - 1, b[3] + wh)                 # [ ] NA
+        above = squares(b[0] - 25, b[1] - 60, b[2] + 25, b[1] - 1)                # [ ] over NA
+        sq = sorted(left, key=lambda q: b[0] - (q[0] + q[2])) or \
+            sorted(above, key=lambda q: b[1] - (q[1] + q[3]))
         if not sq:
-            print(f"  warning: no checkbox square found left of NA on row {num}")
+            print(f"  warning: no checkbox square found next to NA on row {sid}{num} - "
+                  f"item {num} gets no NA box")
             continue
-        x, y, ww, hh = sq[-1]
+        x, y, ww, hh = sq[0]
         cid = f"{sid}{num}.NA"
-        hit = (x - 12, y - 12, max(x + ww, b[2]) + 12, max(y + hh, b[3]) + 12)
+        if (sid, num) in blocks:
+            continue
+        hit = (min(x, b[0]) - 12, min(y, b[1]) - 12, max(x + ww, b[2]) + 12, max(y + hh, b[3]) + 12)
         add(sid, top, {"id": cid, "label": f"{label} - NA checkbox", "type": "checkbox",
                        "box": nbox(x, y, x + ww, y + hh, 0), "hit_box": nbox(*hit, 0),
                        "rule_ref": [f"{sid}-{num}"]})
@@ -425,14 +453,25 @@ def page_template(pdf: Path, page_no: int, out_dir: Path, stem: str) -> dict:
         its = [it for _, it in sorted(items_by_sec.get(sid, []), key=lambda p: p[0])]
         sections.append({"id": sid, "title": titles.get(sid, sid), "choice_defaults": dd, "items": its})
 
+    # items with sub-items (5.1, 5.2, ...) but no NA box found: still checked as one item
+    for sid, lst in items_by_sec.items():
+        for _, it in lst:
+            m = re.fullmatch(rf"{sid}(\d+)\.\d+(\.(start|end|t\d+))?", it["id"])
+            if m and (sid, m.group(1)) not in blocks:
+                hb = next((b2 for t2, b2 in words if t2 == f"{m.group(1)})" and section_at(cy_of(b2)) == sid), None)
+                lab = row_text(h_above(H, hb[0], cy_of(hb)), h_below(H, hb[0], cy_of(hb)), w)[1] if hb else ""
+                blocks[(sid, m.group(1))] = {"label": lab or f"item {m.group(1)}", "checkbox": None}
+                print(f"  item {sid}{m.group(1)} has sub-items but no NA box was found: checked as one "
+                      f"item (all parts or none), with no NA box")
     rules = []
     for (sid, num), info in blocks.items():
         members = [it["id"] for _, it in sorted(items_by_sec.get(sid, []), key=lambda p: p[0])
                    if re.fullmatch(rf"{sid}{num}\.\d+(\.(start|end|t\d+))?", it["id"])]
         rules.append({"id": f"{sid}{num}_block", "type": "block", "item": f"{sid}{num}",
                       "description": f"Item {num}) {info['label']}: {num}.1 onwards",
-                      "items": members, "na_checkbox": info["checkbox"],
-                      "rule_ref": [f"{sid}-{num}"]})
+                      "items": members, "rule_ref": [f"{sid}-{num}"]})
+        if info["checkbox"]:
+            rules[-1]["na_checkbox"] = info["checkbox"]
 
     img_name = f"{stem}_p{page_no}.png"
     cv2.imwrite(str(out_dir / img_name), bgr)
@@ -571,13 +610,21 @@ def main():
     # cross-checks between items, added only when the form has both items
     ids = {it["id"] for p in pages for sec in p["sections"] for it in sec["items"]}
     rules = []
+    block_heads = {str(r.get("item")) for p in pages for r in p.get("rules", []) if r.get("type") == "block"}
     for c in CFG["cross_checks"]:
-        if str(c["checkbox"]) in ids and str(c["item"]) in ids:
-            rules.append({"id": str(c["id"]), "type": "checkbox_conflict", "checkbox": str(c["checkbox"]),
-                          "item": str(c["item"]), "value": str(c.get("value", "Yes")),
-                          "requires_setting": "na_checkbox_rules",
-                          "description": str(c.get("description", c["id"])),
-                          "rule_ref": [str(r) for r in c.get("rule_ref", [])]})
+        head = str(c["checkbox"]).rsplit(".", 1)[0]
+        if str(c["item"]) in ids and (str(c["checkbox"]) in ids or head in block_heads):
+            r = {"id": str(c["id"]), "type": "checkbox_conflict", "item": str(c["item"]),
+                 "value": str(c.get("value", "Yes")), "requires_setting": "na_checkbox_rules",
+                 "description": str(c.get("description", c["id"])),
+                 "rule_ref": [str(r) for r in c.get("rule_ref", [])]}
+            if str(c["checkbox"]) in ids:
+                r["checkbox"] = str(c["checkbox"])
+            else:                              # no NA box found: the answer still decides the item
+                r["block"] = head
+                print(f"  cross-check {c['id']}: no {c['checkbox']} found, so {c['item']} alone "
+                      f"decides whether item {head} applies")
+            rules.append(r)
         else:
             print(f"  cross-check {c['id']} not added: this form has no "
                   f"{' / '.join(x for x in (str(c['checkbox']), str(c['item'])) if x not in ids)}")

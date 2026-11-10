@@ -443,6 +443,15 @@ def _ring_coverage(ink: np.ndarray, cx: float, cy: float, ww: float, wh: float,
     return float((hit >= 2).mean())
 
 
+def _over_middle(ink: np.ndarray, x0: float, y0: float, x1: float, y1: float) -> tuple[int, int]:
+    """Ink pixels above and below the middle of a word (box in the mask's coordinates):
+    where a circle's top and bottom arcs run, and an X's or a tick's strokes do not."""
+    ys, xs = np.nonzero(ink)
+    ww = x1 - x0
+    mid = (xs >= x0 + 0.2 * ww) & (xs <= x1 - 0.2 * ww)
+    return int((mid & (ys < y0 - 2)).sum()), int((mid & (ys > y1 + 2)).sum())
+
+
 def _sides_only(ink: np.ndarray, x0: float, y0: float, x1: float, y1: float) -> bool:
     """True when the ink around a word lies only beside its left and right ends - nothing
     above or below the middle of the word, as with '(' and ')' hugging it. A circle round the
@@ -975,7 +984,12 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
             short_row = (bot - top - word_h) / 2 <= max(reach + 6, 0.75 * word_h)
             cut_by_lines = (short_row and gy0 <= top + reach and gy1 >= bot - reach) \
                 or (gy0 < top and gy1 > bot)
-            if not cut_by_lines and _sides_only(L, wb[0] - gx0, wb[1] - gy0, wb[2] - gx0, wb[3] - gy0):
+            # light parts of the pen (the sensitive pass) count too: a circle drawn with
+            # a light hand often has its darker side only in the normal pass
+            near = L
+            if ctx.faint is not None:
+                near = L | ctx.faint.added[gy0:gy1, gx0:gx1]
+            if not cut_by_lines and _sides_only(near, wb[0] - gx0, wb[1] - gy0, wb[2] - gx0, wb[3] - gy0):
                 stray[ri] += ink
                 outline[ri].add(best)
                 continue
@@ -1037,8 +1051,16 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
                 note = "mark straddles two cells"
             Lc = cv2.morphologyEx(L.astype(np.uint8), cv2.MORPH_CLOSE,
                                   cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
+            arcs = (0, 0)
+            if cell in r["words"]:
+                wb = r["words"][cell]
+                arcs = _over_middle(L, wb[0] - gx0, wb[1] - gy0, wb[2] - gx0, wb[3] - gy0)
             if cell not in r["words"]:
                 kind = "written"            # e.g. handwritten NA in an unprinted cell
+            elif enclosure.get(cell, 0) >= s.enclose_min and min(arcs) >= max(4, 0.1 * (wb[2] - wb[0])):
+                # around the word, with arcs over its middle both above and below: a circle
+                # broken where it crossed the letters, not an X or a tick
+                kind = "partial-circle"
             elif _is_cross(Lc, quads):
                 # an X-shaped mark on its own counts like a tick; cancellation is decided
                 # only by the straight-stroke test on the printed word (word_struck)

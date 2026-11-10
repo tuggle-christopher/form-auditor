@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import numpy as np
+
 from .context import PageContext
 from .details import DetailsReading, field_extent, read_section_details
 from .layout import FieldText, PageText, assign_words, checkbox_mark, fuse_presence, \
@@ -463,7 +465,7 @@ def _apply_block(rule: dict, findings: list[Finding], required: bool, why: str,
                 m.rule_refs = refs
             elif m.status == "FAIL" and not _has_content(m):
                 m.status, m.reason = "PASS", ""       # a blank here is right
-    bad = [m.item_id for m in members if m.status == "FAIL"]
+    bad = [m.item_id for m in (blanks if required else filled) if m.status == "FAIL"]
     block.reason = "" if not bad else (
         f"Item {head} applies ({why}) but {len(bad)} part(s) are blank: " if required else
         f"Item {head} does not apply ({why}) but {len(bad)} part(s) are filled in: ") + ", ".join(bad)
@@ -486,21 +488,26 @@ def _rule_block(rule: dict, findings: list[Finding], s: Settings) -> Finding:
     filled = [m for m in members if _has_content(m)]
     f.metrics["has_content"] = bool(filled)
     cb_state = cb.observed if cb else "missing"
-    if s.na_checkbox_rules:
+    unclear = False
+    if s.na_checkbox_rules and rule.get("na_checkbox"):
         if cb_state in ("uncertain", "occluded", "missing"):
-            f.status = "REVIEW"
-            f.observed = f"{len(filled)} of {len(members)} part(s) filled in; NA box {cb_state}"
-            f.expected = "every part filled in, or NA ticked and every part blank"
-            f.reason = (f"Cannot tell whether item {head} applies: its NA box is {cb_state} "
-                        f"({len(filled)} part(s) filled in)")
-            f.boxes = cb.boxes if cb else []
-            return f
-        required = cb_state != "ticked"
-        why = "its NA box is not ticked" if required else "its NA box is ticked"
+            # the NA box can't be read: go by the parts (some filled in = the item is in use,
+            # so the rest must be too) until a Section B answer decides (document rules)
+            unclear = True
+            required = bool(filled)
+            why = f"part of it is filled in and its NA box is {cb_state}"
+        else:
+            required = cb_state != "ticked"
+            why = "its NA box is not ticked" if required else "its NA box is ticked"
     else:
         required = bool(filled)
         why = "part of it is filled in"
     _apply_block(rule, findings, required, why, f, members, cb)
+    if unclear:
+        f.status = "REVIEW"
+        f.boxes = cb.boxes if cb else []
+        f.reason = (f"Item {head}'s NA box is {cb_state} - check it. " + (f.reason or (
+            f"{len(filled)} of {len(members)} part(s) filled in")))
     return f
 
 
@@ -540,6 +547,76 @@ def _faint_choices(ctx: PageContext, sec: Section, choices: dict[str, ChoiceRead
             fr.marks, fr.visible)
 
 
+def _close_look(ctx: PageContext, sec: Section, choices: dict[str, ChoiceReading],
+                base: Settings) -> None:
+    """Rows still without a clear answer but with pen ink in them: look again with the
+    print taken out more tightly (only the printed strokes themselves and print_core_px
+    round them, instead of template_dilate_px). A circle drawn tight round a word runs
+    through that margin, so most of it is lost with the print; here it can be seen.
+
+    Used only when the print is removed cleanly around this row: if the tight view also
+    shows ink round a printed word nobody marked (the form printed bolder, or lined up a
+    little off), the row is left as it was."""
+    if ctx.tpl_core is None:
+        return
+    from dataclasses import replace
+    from .ink import ink_mask, remove_small
+    s = base
+    todo = [i for i in sec.items if i.type == "choice" and choices[i.id].state in ("none", "uncertain")
+            and i.printed and len(i.printed) >= 2]
+    H, W = ctx.shape
+    for it in todo:
+        cells = [ctx.px(b) for b in it.options.values() if b]
+        if not cells:
+            continue
+        x0, y0 = min(c[0] for c in cells), min(c[1] for c in cells)
+        x1, y1 = max(c[2] for c in cells), max(c[3] for c in cells)
+        has_pen = ctx.maps.added[y0:y1, x0:x1].sum() + (
+            ctx.faint.added[y0:y1, x0:x1].sum() if ctx.faint is not None else 0)
+        if has_pen < s.min_component_px:
+            continue                        # nothing written here: a blank row stays blank
+        pad = 40
+        X0, Y0, X1, Y1 = max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad)
+        raw = ink_mask(ctx.maps.warped[Y0:Y1, X0:X1], s)[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0]
+        core = ctx.tpl_core[y0:y1, x0:x1]
+        seen = raw & ~core & ~ctx.maps.occluded[y0:y1, x0:x1]
+        # keep only the inside of the cells (the row lines' edges are not pen)
+        b = s.template_dilate_px
+        inner = np.zeros_like(seen)
+        for c in cells:
+            inner[max(0, c[1] - y0 + 3):c[3] - y0 - 3, max(0, c[0] - x0 + 3):c[2] - x0 - 3] = True
+        seen = remove_small(seen & inner, s.min_component_px)
+        # print left over? ink hugging a printed word in the tight view only
+        halo = {}
+        for o, wbox in it.printed.items():
+            wx0, wy0, wx1, wy1 = ctx.px(wbox)
+            ring = np.zeros_like(seen)
+            ring[max(0, wy0 - y0 - b):wy1 - y0 + b, max(0, wx0 - x0 - b):wx1 - x0 + b] = True
+            ring[max(0, wy0 - y0):wy1 - y0, max(0, wx0 - x0):wx1 - x0] = False
+            halo[o] = int((seen & ring).sum())
+        added = ctx.maps.added.copy()
+        added[y0:y1, x0:x1] |= seen
+        ctx2 = replace(ctx, maps=replace(ctx.maps, added=added), faint=None)
+        top = max(halo, key=halo.get)
+        clean = all(v <= max(s.min_component_px, 0.15 * halo[top]) for o, v in halo.items() if o != top)
+        if not clean:
+            continue                        # ink round the other words too: print left over
+        rd = read_section_choices(ctx2, [it], base)[it.id]
+        main = [m for m in rd.marks if m.option == rd.selected and m.kind in ("circle", "partial-circle")]
+        if rd.state == "selected" and rd.confidence >= 0.8 and main and rd.selected == top:
+            choices[it.id] = ChoiceReading(
+                "selected", rd.selected, 0.75,
+                f"circle round {rd.selected} drawn over the printed letters (seen with the print "
+                f"removed more tightly)", rd.marks, rd.visible)
+        elif choices[it.id].state == "none" and halo[top] >= 2 * s.min_component_px:
+            # pen right against one printed word, too little of it left to tell its shape:
+            # not "no answer" - a person must look
+            choices[it.id] = ChoiceReading(
+                "uncertain", top, 0.4,
+                f"pen ink drawn over / right next to the printed {top}, but too little of it "
+                f"is visible to tell the mark - check", rd.marks, rd.visible)
+
+
 def _page_fields(page: TemplatePage, ctx: PageContext):
     """(fields the reader's words are given to, Yes/No/NA cells + checkboxes, all boxes)"""
     fields, answers = {}, []
@@ -574,6 +651,8 @@ def audit_page(page: TemplatePage, ctx: PageContext, base: Settings,
         choices = read_section_choices(ctx, sec.items, base)
         if base.faint_check:
             _faint_choices(ctx, sec, choices, base)
+        if base.close_look:
+            _close_look(ctx, sec, choices, base)
         details = read_section_details(ctx, sec.items, base)
         fdetails = None
         for item in sec.items:
@@ -697,11 +776,16 @@ def apply_document_rules(template: FormTemplate, pages: dict[str, list[Finding]]
             continue
         if rule.get("type") != "checkbox_conflict":
             raise ValueError(f"Unknown document rule type: {rule.get('type')}")
-        cb_id, other, value = str(rule["checkbox"]), str(rule["item"]), str(rule["value"])
-        cb_page, other_page = template.page_of_item(cb_id), template.page_of_item(other)
+        other, value = str(rule["item"]), str(rule["value"])
+        cb_id = str(rule["checkbox"]) if rule.get("checkbox") else ""
+        block_rule = next((r for p in template.pages for r in p.rules if r.get("type") == "block" and (
+            (cb_id and str(r.get("na_checkbox")) == cb_id) or str(r.get("item")) == str(rule.get("block")))), None)
+        bpage = next((p.page_id for p in template.pages if block_rule in p.rules), None) if block_rule else None
+        cb_page, other_page = (template.page_of_item(cb_id) if cb_id else bpage), template.page_of_item(other)
         if cb_page not in pages:
             continue                         # that page is not in this form - nothing to check
-        cb = _main_finding(pages[cb_page], cb_id)
+        cb = _main_finding(pages[cb_page], cb_id) if cb_id else None
+        no_box = not cb_id                   # the form has no NA box for this item
         oth = _main_finding(pages.get(other_page, []), other)
         f = Finding(cb.section_id if cb else "PAGE", cb.section_title if cb else "Page rules",
                     f"rule:{rule.get('id')}", rule.get("description", rule.get("id")),
@@ -717,14 +801,17 @@ def apply_document_rules(template: FormTemplate, pages: dict[str, list[Finding]]
             ans = oth.observed
         applies = None if ans is None else (ans == value)
         f.observed = (f"{other} = {ans if ans is not None else (oth.observed if oth else 'page not in this file')}; "
-                      f"{cb_id} {cb_state}")
+                      + (f"{cb_id} {cb_state}" if cb_id else "no NA box"))
         f.expected = ("NA box not ticked" if applies else "NA box ticked" if applies is False
                       else "NA box matching " + other)
         f.boxes = list(cb.boxes) if cb else []
-        block_rule = next((r for p in template.pages for r in p.rules
-                           if r.get("type") == "block" and str(r.get("na_checkbox")) == cb_id), None)
         head = str(block_rule.get("item")) if block_rule else cb_id.split(".")[0]
-        if cb_state in ("uncertain", "occluded"):
+        if no_box:
+            f.expected = (f"item {head} {'applies' if applies else 'does not apply' if applies is False else 'per ' + other}")
+            if applies is None:
+                f.status = "REVIEW"
+                f.reason = f"{other} could not be read, so it is not known whether item {head} applies"
+        elif cb_state in ("uncertain", "occluded"):
             f.status = "REVIEW"
             f.reason = (f"{cb_id} is {cb_state}; {other} is {ans or 'unclear'}, so the NA box should "
                         f"{'not ' if applies else ''}be ticked - check" if applies is not None
@@ -742,7 +829,6 @@ def apply_document_rules(template: FormTemplate, pages: dict[str, list[Finding]]
             f.reason = f"{cb_id} is ticked; {other} could not be confirmed ({f.observed.split(';')[0]})"
         # the parts of the item: what Section B says decides whether they must be filled in
         if block_rule is not None and applies is not None:
-            bpage = next((p.page_id for p in template.pages if block_rule in p.rules), None)
             if bpage in pages:
                 _, members, bcb, block = _block_parts(block_rule, pages[bpage])
                 if block is not None:
