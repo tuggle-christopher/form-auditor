@@ -417,59 +417,90 @@ def _has_content(f: Finding) -> bool:
     return f.observed in ("filled", "uncertain")
 
 
-def _rule_block(rule: dict, findings: list[Finding], s: Settings) -> Finding:
-    """An item with sub-items (e.g. 5.1-5.5 under item 5) and an NA checkbox.
-
-    na_checkbox_rules off: the block is required as soon as any part of it is filled in.
-    na_checkbox_rules on:  the block is required unless its NA box is ticked.
-    When required, every member must be answered / filled; blanks are FAIL."""
+def _block_parts(rule: dict, findings: list[Finding]):
     head = str(rule.get("item", rule.get("id")))
     members = [m for m in (_main_finding(findings, str(i)) for i in rule.get("items", [])) if m]
     cb = _main_finding(findings, str(rule["na_checkbox"])) if rule.get("na_checkbox") else None
-    cb_state = cb.observed if cb else "missing"
+    block = next((f for f in findings if f.check == "item_in_use" and f.item_id == head), None)
+    return head, members, cb, block
+
+
+def _apply_block(rule: dict, findings: list[Finding], required: bool, why: str,
+                 block: Finding, members: list[Finding], cb: Optional[Finding]) -> None:
+    """Mark the parts of an item with sub-items. required: every part must be answered /
+    filled (blanks FAIL); not required: the item does not apply, so every part must be
+    left blank (anything filled in FAILs). Can be applied again with more information
+    (the document rules know Section B): each part is first put back as it was read."""
+    head = block.item_id
+    for m in members:                     # back to the part's own result
+        if "pre_block" in m.metrics:
+            m.status, m.reason, m.expected, m.rule_refs = m.metrics["pre_block"]
+        else:
+            m.metrics["pre_block"] = (m.status, m.reason, m.expected, list(m.rule_refs))
     filled = [m for m in members if _has_content(m)]
+    blanks = [m for m in members if not _has_content(m)]
+    refs = list(rule.get("rule_ref", []))
+    span = f"{len(filled)} of {len(members)} part(s) filled in"
+    if cb is not None:
+        span += f"; NA box {cb.observed}"
+    block.status, block.boxes = "PASS", []
+    block.observed = ("applies: " if required else "does not apply: ") + span
+    block.expected = "every part filled in" if required else "every part left blank"
+    for m in members:
+        if required:
+            m.expected = "Yes or No" if m.check == "response" else "filled"
+            if m in blanks and m.status in ("PASS", "SKIP"):
+                what = "No response marked" if m.check == "response" else "Value missing"
+                m.status = "FAIL"
+                m.reason = f"{what} - item {head} applies ({why}), so every part must be filled in"
+                m.rule_refs = refs
+        else:
+            m.expected = f"blank (item {head} does not apply)"
+            if m in filled:
+                m.status = "FAIL"
+                m.reason = (f"Filled in, but item {head} does not apply ({why}) - this part must "
+                            f"be left blank")
+                m.rule_refs = refs
+            elif m.status == "FAIL" and not _has_content(m):
+                m.status, m.reason = "PASS", ""       # a blank here is right
+    bad = [m.item_id for m in members if m.status == "FAIL"]
+    block.reason = "" if not bad else (
+        f"Item {head} applies ({why}) but {len(bad)} part(s) are blank: " if required else
+        f"Item {head} does not apply ({why}) but {len(bad)} part(s) are filled in: ") + ", ".join(bad)
+
+
+def _rule_block(rule: dict, findings: list[Finding], s: Settings) -> Finding:
+    """An item with sub-items (e.g. 5.1-5.6 under item 5) and an NA checkbox.
+
+    na_checkbox_rules off: the item applies as soon as any part of it is filled in, and
+        then every part must be filled in.
+    na_checkbox_rules on: the item applies unless its NA box is ticked. Applies: every part
+        must be filled in. NA ticked: every part must be left blank. Where a Section B
+        answer says whether the item applies (document rules, e.g. B6 for item 5), that
+        answer decides instead and the NA box is checked against it."""
+    head, members, cb, _ = _block_parts(rule, findings)
     f = Finding(members[0].section_id if members else "PAGE",
                 members[0].section_title if members else "Page rules",
                 head, rule.get("description", head), "item_in_use", "PASS", "", "", "", 1.0,
                 rule_refs=list(rule.get("rule_ref", [])))
+    filled = [m for m in members if _has_content(m)]
     f.metrics["has_content"] = bool(filled)
-    span = f"{len(filled)} of {len(members)} part(s) filled in; NA box {cb_state}"
+    cb_state = cb.observed if cb else "missing"
     if s.na_checkbox_rules:
         if cb_state in ("uncertain", "occluded", "missing"):
-            f.status, f.observed = "REVIEW", span
-            f.expected = "complete unless NA is ticked"
+            f.status = "REVIEW"
+            f.observed = f"{len(filled)} of {len(members)} part(s) filled in; NA box {cb_state}"
+            f.expected = "every part filled in, or NA ticked and every part blank"
             f.reason = (f"Cannot tell whether item {head} applies: its NA box is {cb_state} "
                         f"({len(filled)} part(s) filled in)")
             f.boxes = cb.boxes if cb else []
             return f
         required = cb_state != "ticked"
-        why = "its NA box is not ticked"
-        f.expected = "complete (NA not ticked)" if required else "not required (NA ticked)"
-        if not required and filled:
-            f.status, f.observed = "REVIEW", span
-            f.reason = (f"Item {head} NA box is ticked but {len(filled)} of its part(s) are "
-                        f"filled in: " + ", ".join(m.item_id for m in filled))
-            f.boxes = (cb.boxes if cb else []) + [b for m in filled for b in m.boxes]
-            return f
+        why = "its NA box is not ticked" if required else "its NA box is ticked"
     else:
         required = bool(filled)
         why = "part of it is filled in"
-        f.expected = "all parts filled in, or none"
-    f.observed = ("in use: " if required else "not used: ") + span
-    blanks = [m for m in members if not _has_content(m)]
-    for m in members:
-        if not required:
-            m.expected = f"not required (item {head} not used)" if not s.na_checkbox_rules \
-                else f"not required (item {head} NA ticked)"
-            continue
-        m.expected = "Yes or No" if m.check == "response" else "filled"
-        if m in blanks and m.status in ("PASS", "SKIP"):
-            what = "No response marked" if m.check == "response" else "Value missing"
-            m.status, m.reason = "FAIL", f"{what} - item {head} must be complete because {why}"
-            m.rule_refs = list(rule.get("rule_ref", []))
-    if required and blanks:
-        f.reason = f"Item {head} is incomplete ({len(blanks)} blank part(s)) - see " + \
-                   ", ".join(m.item_id for m in blanks)
+    _apply_block(rule, findings, required, why, f, members, cb)
     return f
 
 
@@ -678,21 +709,44 @@ def apply_document_rules(template: FormTemplate, pages: dict[str, list[Finding]]
                     1.0, rule_refs=list(rule.get("rule_ref", [])))
         cb_state = cb.observed if cb else "missing"
         if oth is None:
-            ans = f"page {other_page} not in this file"
+            ans = None
         elif oth.status == "SKIP" or oth.observed in ("none", "multiple", "ambiguous", "cancelled") \
                 or oth.observed.startswith(("uncertain", "occluded")):
             ans = None
         else:
             ans = oth.observed
-        f.observed = f"{other} = {ans if ans is not None else (oth.observed if oth else '?')}; {cb_id} {cb_state}"
+        applies = None if ans is None else (ans == value)
+        f.observed = (f"{other} = {ans if ans is not None else (oth.observed if oth else 'page not in this file')}; "
+                      f"{cb_id} {cb_state}")
+        f.expected = ("NA box not ticked" if applies else "NA box ticked" if applies is False
+                      else "NA box matching " + other)
         f.boxes = list(cb.boxes) if cb else []
-        if cb_state == "ticked" and ans == value:
+        block_rule = next((r for p in template.pages for r in p.rules
+                           if r.get("type") == "block" and str(r.get("na_checkbox")) == cb_id), None)
+        head = str(block_rule.get("item")) if block_rule else cb_id.split(".")[0]
+        if cb_state in ("uncertain", "occluded"):
+            f.status = "REVIEW"
+            f.reason = (f"{cb_id} is {cb_state}; {other} is {ans or 'unclear'}, so the NA box should "
+                        f"{'not ' if applies else ''}be ticked - check" if applies is not None
+                        else f"{cb_id} is {cb_state} and {other} is unclear - check")
+        elif applies is True and cb_state == "ticked":
             f.status = "FAIL"
-            f.reason = f"{cb_id} is ticked but {other} is '{value}'"
-        elif cb_state in ("uncertain", "occluded") and (ans == value or ans is None):
-            f.status, f.reason = "REVIEW", f"{cb_id} is {cb_state} and {other} is {ans or 'unclear'} - check"
-        elif cb_state == "ticked" and (ans is None or oth is None):
+            f.reason = (f"{cb_id} is ticked but {other} is '{ans}': item {head} applies, so its NA "
+                        f"box must not be ticked and every part must be filled in")
+        elif applies is False and cb_state != "ticked":
+            f.status = "FAIL"
+            f.reason = (f"{cb_id} is not ticked but {other} is '{ans}': item {head} does not apply, "
+                        f"so its NA box must be ticked and every part left blank")
+        elif applies is None and cb_state == "ticked":
             f.status = "REVIEW"
             f.reason = f"{cb_id} is ticked; {other} could not be confirmed ({f.observed.split(';')[0]})"
+        # the parts of the item: what Section B says decides whether they must be filled in
+        if block_rule is not None and applies is not None:
+            bpage = next((p.page_id for p in template.pages if block_rule in p.rules), None)
+            if bpage in pages:
+                _, members, bcb, block = _block_parts(block_rule, pages[bpage])
+                if block is not None:
+                    _apply_block(block_rule, pages[bpage], applies,
+                                 f"{other} is '{ans}'", block, members, bcb)
         out.append((cb_page, f))
     return out

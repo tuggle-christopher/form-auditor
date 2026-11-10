@@ -218,8 +218,8 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
         xs_, ys_ = xa + (xb - xa) * t, ya + (yb - ya) * t
         return bool(((xs_ >= ix0) & (xs_ <= ix1) & (ys_ >= iy0) & (ys_ <= iy1)).any())
 
-    reach = {"A": [np.inf, -np.inf], "B": [np.inf, -np.inf]}
-    one_stroke = {"A": False, "B": False}
+    reach = {"A": [np.inf, -np.inf], "B": [np.inf, -np.inf], "H": [np.inf, -np.inf]}
+    one_stroke = {"A": False, "B": False, "H": False}
     strike = False
     straight = []                     # strokes through the word: removed before the ring test
     for xa, ya, xb, yb in segs.reshape(-1, 4).astype(float):
@@ -251,6 +251,13 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
         length = math.hypot(xb - xa, yb - ya)
         ang = math.degrees(math.atan2(-(yb - ya), xb - xa)) % 180
         d = abs((xb - xa) * (ya - py_) - (xa - px_) * (yb - ya)) / max(length, 1)
+        if (ang <= 12 or ang >= 168) and d <= 0.25 * wh and through_word(xa, ya, xb, yb):
+            # a piece of a horizontal line through the middle of the word (a strike-through
+            # whose middle went with the print)
+            straight.append((xa, ya, xb, yb))
+            reach["H"][0] = min(reach["H"][0], xa, xb)
+            reach["H"][1] = max(reach["H"][1], xa, xb)
+            continue
         if d <= 0.4 * wmin and through_word(xa, ya, xb, yb):
             c = "A" if 20 <= ang <= 70 else "B" if 110 <= ang <= 160 else None
             if c:
@@ -265,46 +272,141 @@ def word_struck(ctx: PageContext, wb: tuple[int, int, int, int], s: Settings,
     def present(c):
         return reach[c][1] > reach[c][0] or c in present_short
 
-    def bridged(c):
+    # the pen ink around the word (wider than the window above, so a whole circle is seen),
+    # in connected strokes: used to tell a line drawn through the inside of a circle from
+    # a piece of the circle itself (its edge, its starting hook, its tail)
+    RX0, RY0 = max(0, int(x0 - 1.5 * ww)), max(0, int(y0 - 2.0 * wh))
+    RX1, RY1 = min(W, int(x1 + 1.5 * ww)), min(H, int(y1 + 2.0 * wh))
+    if row_box is not None:                 # never count the circles of the rows above / below
+        RY0, RY1 = max(RY0, row_box[1] - 8), min(RY1, row_box[3] + 8)
+    pen = ctx.maps.added[RY0:RY1, RX0:RX1]
+    _, strokes = cv2.connectedComponents(cv2.dilate(pen.astype(np.uint8), np.ones((3, 3), np.uint8)),
+                                         connectivity=8)
+
+    def depth(seg):
+        """How far inside the outline of its own stroke(s) a straight piece reaches (px),
+        less the pen's width. A line drawn through a circled word runs through the middle of
+        the circle; a piece of the circle - however straight, and even the inner edge of a
+        thick stroke - lies on its outline."""
+        xa, ya, xb, yb = seg
+        t = np.linspace(0.0, 1.0, 12)
+        xs_ = xa + (xb - xa) * t + X0 - RX0
+        ys_ = ya + (yb - ya) * t + Y0 - RY0
+        hh, ww_ = strokes.shape
+        ids = set(strokes[np.clip(ys_.astype(int), 0, hh - 1), np.clip(xs_.astype(int), 0, ww_ - 1)].tolist()) - {0}
+        if not ids:
+            return 0.0
+        own = np.isin(strokes, list(ids)) & pen
+        yy_, xx_ = np.nonzero(own)
+        if len(xx_) < 3:
+            return 0.0
+        hull = cv2.convexHull(np.stack([xx_, yy_], 1).astype(np.int32))
+        # the pen's width: twice the distance to the stroke's edge along its centre line
+        dist = cv2.distanceTransform(own.astype(np.uint8), cv2.DIST_L2, 3)
+        centre = _thin(own)
+        width = 2.0 * float(np.median(dist[centre])) if centre.any() else 3.0
+        inside = max(cv2.pointPolygonTest(hull, (float(a), float(b)), True) for a, b in zip(xs_, ys_))
+        return inside - width
+
+    def cls_of(xa, ya, xb, yb):
+        ang = math.degrees(math.atan2(-(yb - ya), xb - xa)) % 180
+        return "A" if 20 <= ang <= 70 else "B" if 110 <= ang <= 160 else \
+            "H" if (ang <= 12 or ang >= 168) else None
+
+    def bridged(c, inside=False):
         """Is this diagonal really one line across the word whose middle was removed with
-        the print? Then a long straight piece of it is left on EACH side of the word. Two
-        strokes that only happen to line up - the starting hook of a circle on one side and
-        a bit of the circle's own edge on the other - leave a short piece on one side."""
-        left = right = 0.0
-        for xa, ya, xb, yb in straight:
-            ang = math.degrees(math.atan2(-(yb - ya), xb - xa)) % 180
-            if ("A" if 20 <= ang <= 70 else "B" if 110 <= ang <= 160 else None) != c:
+        the print? Then a long straight piece of it is left on EACH side of the word, and the
+        two pieces lie on one line. Strokes that only happen to point the same way - the
+        starting hook of a circle on one side and a bit of the circle's own edge on the other,
+        or two opposite arcs of a tight circle - leave a short piece on one side, or two
+        pieces on parallel lines apart from each other."""
+        left = right = None
+        for seg in straight:
+            xa, ya, xb, yb = seg
+            if cls_of(*seg) != c:
                 continue
             L = math.hypot(xb - xa, yb - ya)
             if min(xa, xb) < px_ - 0.1 * ww and max(xa, xb) > px_ + 0.1 * ww:
                 return True                # one piece runs across the middle of the word
             if (xa + xb) / 2 < px_:
-                left = max(left, L)
-            else:
-                right = max(right, L)
-        return min(left, right) >= s.slash_piece_min * ww
+                if left is None or L > left[0]:
+                    left = (L, seg)
+            elif right is None or L > right[0]:
+                right = (L, seg)
+        if left is None or right is None or min(left[0], right[0]) < s.slash_piece_min * ww:
+            return False
+        tol = max(6.0, 0.35 * wmin)        # hand-drawn lines wobble a little
+        # one straight line through the ends of both pieces (a short piece's own slope is
+        # too shaky to extend across the word, so the four ends are fitted together)
+        pts = np.array([left[1][:2], left[1][2:], right[1][:2], right[1][2:]], float)
+        ctr = pts.mean(0)
+        _, _, vt = np.linalg.svd(pts - ctr)
+        if np.abs((pts - ctr) @ vt[1]).max() > tol:
+            return False
+        # inside (a slash on its own, no second line): both pieces are long, or both reach
+        # into the inside of the mark towards the word rather than lying on its outline. A
+        # circle whose tail curls in under the word and whose starting hook sits on its far
+        # edge can line up exactly like a slash, with two shortish pieces on the outline.
+        return (not inside or min(left[0], right[0]) >= s.slash_alone_min * ww
+                or min(depth(left[1]), depth(right[1])) >= max(4.0, 0.25 * wmin))
 
-    if (spans("A") and present("B")) or (spans("B") and present("A")):
+    near_ink = cv2.dilate(_thin(E).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    eh, ew = E.shape
+
+    def diag_line(c):
+        """The second line of an X, looked for directly: a straight run of ink leaving the word
+        on both sides along some line of this diagonal through the word's middle. Its pieces
+        are often too short or too merged with the circle for the line detector, but the ink
+        is there all along, from the word out towards the circle. A circle only crosses such
+        a line once on each side, leaving short covered bits."""
+        best = 0.0
+        L = 0.45 * ww
+        angles = range(115, 160, 5) if c == "B" else range(25, 70, 5)
+        for a in angles:
+            ux, uy = math.cos(math.radians(a)), -math.sin(math.radians(a))
+            for o in (-0.2 * wmin, 0.0, 0.2 * wmin):
+                cx_, cy_ = px_ - uy * o, py_ + ux * o
+                # where the line leaves the word's box, on each side
+                hx, hy = ww / 2 + 2, wh / 2 + 2
+                tmax = min(hx / max(abs(ux), 1e-6), hy / max(abs(uy), 1e-6))
+                cov = []
+                for sign in (-1, 1):
+                    t = sign * (tmax + np.linspace(0, L, 16))
+                    xs_, ys_ = cx_ + ux * t, cy_ + uy * t
+                    ok = (xs_ >= 0) & (xs_ < ew) & (ys_ >= 0) & (ys_ < eh)
+                    hit = np.zeros(len(t), bool)
+                    hit[ok] = near_ink[ys_[ok].astype(int), xs_[ok].astype(int)]
+                    cov.append(float(hit.mean()))
+                best = max(best, min(cov))
+        return best
+
+    def line_across(c, inside=False):
+        """One straight line right across the word: a single stroke, or long pieces of one
+        line left on both sides of the letters."""
+        return one_stroke[c] or (spans(c) and bridged(c, inside))
+
+    def second_line(c):
+        # ink running straight out of the word on both sides along this diagonal (a piece of
+        # the circle's edge that merely points the same way does not leave the word)
+        return diag_line(c) >= 0.4
+
+    # Only an obvious crossing out counts: at least one straight line right across the word.
+    # A tick's long arm starts at its vertex near the word's middle, so it never reaches past
+    # both sides; the pieces of a circle - its starting hook, its tail, its curved edge
+    # broken into short straight bits - never make one line across the word.
+    if (line_across("A") and second_line("B")) or (line_across("B") and second_line("A")):
         how = "crossed out"
-    elif one_stroke["A"] or one_stroke["B"] or (spans("A") and bridged("A")) \
-            or (spans("B") and bridged("B")):
-        # a single straight slash right across the word: one stroke, or a long piece of it
-        # left on each side of the letters (a tick's long arm starts at its vertex near the
-        # word's middle, so it never reaches past both sides; a circle's starting hook and
-        # its far edge leave a short piece on one side)
+    elif line_across("A", inside=True) or line_across("B", inside=True):
+        # a single slash, with no second line: its pieces must also run through the inside
+        # of the circle
         how = "crossed out (slash)"
-    elif strike:
+    elif strike or line_across("H", inside=True):
         how = "struck through"
     else:
         return None
     # A cancellation is a word that was CIRCLED and then crossed out. Without a ring
     # around the word, the strokes are an answer (a tick or X drawn over a narrow word),
-    # not a cancellation.
-    RX0, RY0 = max(0, int(x0 - 1.5 * ww)), max(0, int(y0 - 2.0 * wh))
-    RX1, RY1 = min(W, int(x1 + 1.5 * ww)), min(H, int(y1 + 2.0 * wh))
-    if row_box is not None:                 # never count the circles of the rows above / below
-        RY0, RY1 = max(RY0, row_box[1] - 8), min(RY1, row_box[3] + 8)
-    # the crossing strokes themselves are taken out first: the two arms of a tick (or of
+    # not a cancellation. The crossing strokes themselves are taken out first: the two arms of a tick (or of
     # an X) drawn over a short word reach out in several directions and would otherwise
     # pass for a circle around it
     ring_ink = ctx.maps.added[RY0:RY1, RX0:RX1].astype(np.uint8)
@@ -341,20 +443,19 @@ def _ring_coverage(ink: np.ndarray, cx: float, cy: float, ww: float, wh: float,
     return float((hit >= 2).mean())
 
 
-def _sides_only(ink: np.ndarray, cx: float, cy: float, ww: float, wh: float) -> bool:
-    """True when the ink around a word lies only beyond its left and right ends - nothing
-    above or below it, as with '(' and ')' hugging the word. Even a circle drawn tight on
-    the letters (most of it lost where it crosses the print) keeps some arc above or below."""
+def _sides_only(ink: np.ndarray, x0: float, y0: float, x1: float, y1: float) -> bool:
+    """True when the ink around a word lies only beside its left and right ends - nothing
+    above or below the middle of the word, as with '(' and ')' hugging it. A circle round the
+    word, however tight, has its top and bottom arcs over the middle of the word (unless they
+    ran along the row lines and were removed with them - see the caller)."""
     ys, xs = np.nonzero(ink)
     if len(xs) == 0:
         return True
-    dx, dy = (xs - cx) / max(ww / 2, 1), (ys - cy) / max(wh / 2, 1)
-    r = np.hypot(dx, dy)
-    keep = r >= 0.8
-    if not keep.any():
-        return True
-    vertical = np.abs(dy[keep]) / r[keep] > 0.85        # straight above or below the centre
-    return int(vertical.sum()) < 3
+    ww = x1 - x0
+    mid = (xs >= x0 + 0.2 * ww) & (xs <= x1 - 0.2 * ww)
+    off = (ys < y0 - 2) | (ys > y1 + 2)
+    # an arc over the middle of the word leaves far more than a few stray pixels there
+    return int((mid & off).sum()) < max(6, 0.25 * ww)
 
 
 def _is_tick(L: np.ndarray) -> bool:
@@ -859,16 +960,22 @@ def read_section_choices(ctx: PageContext, items: list[Item], base: Settings
                                     f"over the printed {'/'.join(hit)} here"))
             continue
         if best and enclosure[best] >= s.enclose_min:
-            # far too little ink for a circle round the word, and only beside its ends
-            # (e.g. '(' and ')' hugging the word), nothing above or below: not a circle. This is what
-            # print left over looks like where a form is printed slightly differently from
-            # the blank (bolder, larger); a real circle has ink all the way round
+            # ink only beside the word's ends (e.g. '(' and ')' hugging it), nothing above
+            # or below its middle: not a circle. This is what print left over looks like
+            # where a form is printed slightly differently from the blank (bolder, larger);
+            # a real circle has arcs above and below the word...
             wb = r["words"][best]
-            ww, wh = wb[2] - wb[0], wb[3] - wb[1]
-            a_, b_ = ww / 2 + 6, wh / 2 + 6
-            perim = np.pi * (3 * (a_ + b_) - np.sqrt((3 * a_ + b_) * (a_ + 3 * b_)))
-            if ink < s.circle_min_ink * 3 * perim and _sides_only(
-                    L, (wb[0] + wb[2]) / 2 - gx0, (wb[1] + wb[3]) / 2 - gy0, ww, wh):
+            # ...unless it runs from the row's top line to its bottom line in a short row
+            # (little room above and below the word, so a circle round it has to run along
+            # the lines and its top and bottom were removed with them), or it crosses both
+            # lines (a big loop)
+            reach = s.template_dilate_px + 4
+            top, bot = r["box"][1], r["box"][3]
+            word_h = wb[3] - wb[1]
+            short_row = (bot - top - word_h) / 2 <= max(reach + 6, 0.75 * word_h)
+            cut_by_lines = (short_row and gy0 <= top + reach and gy1 >= bot - reach) \
+                or (gy0 < top and gy1 > bot)
+            if not cut_by_lines and _sides_only(L, wb[0] - gx0, wb[1] - gy0, wb[2] - gx0, wb[3] - gy0):
                 stray[ri] += ink
                 outline[ri].add(best)
                 continue

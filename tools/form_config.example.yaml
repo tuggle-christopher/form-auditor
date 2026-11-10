@@ -38,7 +38,7 @@ flag_rows_upto: {}               # e.g. {B: 5}
 # the form has both items.
 cross_checks: []
 #  - {id: C2_NA_vs_B3, checkbox: C2.NA, item: B3, value: "Yes", rule_ref: [C-2x],
-#     description: "Section B item 3 is Yes, so the item 2 NA box must not be ticked"}
+#     description: "Item 2 applies exactly when Section B item 3 is Yes: NA blank and every part filled, else NA ticked and every part blank"}
 
 # Optional: settings written into the template (see form_auditor/settings.py).
 settings: {}

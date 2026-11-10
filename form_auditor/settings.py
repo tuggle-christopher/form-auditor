@@ -79,16 +79,15 @@ class Settings:
     circle_coverage: float = 0.5          # share of directions around its centre a ring covers
     circle_ring: float = 0.7              # share of its ink lying near its outline
     enclose_min: float = 0.5              # share of a printed word inside the circle
-    circle_min_ink: float = 0.45          # a 'circle' with less than this share of the ink a
-                                          # circle round the word would have, and ink only
-                                          # beside the word's ends, is not a circle
     strike_rule_band_px: int = 4          # cross-out test ignores ink this close to table rules
     strike_erase_px: int = 9              # width of the crossing strokes removed before
+                                          # testing for a circle around a crossed-out word
     report_value_sections: str = "A"     # sections whose written values go into the
                                           # per-document report (comma-separated)
-    slash_piece_min: float = 0.35         # a single slash (no X) needs a straight piece at least
-                                          # this share of the word's width on each side of it
-                                          # testing for a circle around a crossed-out word
+    slash_piece_min: float = 0.35         # a line through a word (cancel) needs a straight piece
+                                          # at least this share of the word's width on each side
+    slash_alone_min: float = 0.6          # ...this share for a slash with no second line, unless
+                                          # both pieces run through the inside of the circle
     cancel_ring_coverage: float = 0.5     # a crossed-out word only counts as cancelled when a
                                           # circle covers this share of directions around it
     cancel_mark_means: str = "withdrawn"  # circled-then-crossed-out option: withdrawn (default:

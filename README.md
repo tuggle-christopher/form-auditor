@@ -130,8 +130,8 @@ The kinds of checks:
 | Answer rows | Exactly one **printed** option (Yes / No / NA) must be marked. NA written in, or circled in an empty cell, is flagged. |
 | Flagged answers | e.g. any **No** → FAIL, optionally only on the first rows of a section. The details read are returned. |
 | Details column | Writing next to an answer that must have empty details (e.g. Yes / NA) → FAIL. |
-| Items with sub-items | e.g. 5.1–5.5 under item 5. With the NA-checkbox rules on, all parts are required unless the item's NA box is ticked. With them off, an item that is partly filled in must be complete. Time fields need HH:MM; number fields need a value. |
-| Cross-checks | e.g. "the NA box of item X must not be ticked when answer Y is Yes". |
+| Items with sub-items | e.g. 5.1–5.6 under item 5, with an NA box. With the NA-checkbox rules on, the Section B answer that goes with the item (B6 for item 5, B7 for item 6) says whether it applies. **Applies:** the NA box must be blank, and every part must be filled in (each blank part FAILs). **Doesn't apply:** the NA box must be ticked, and every part must be blank (each filled part FAILs). A wrongly ticked or wrongly blank NA box FAILs as well. If the Section B answer can't be read, the NA box decides which of the two applies. With the rules off, an item that is partly filled in must be complete. Time fields need HH:MM; number fields need a value. |
+| Cross-checks | e.g. "the NA box of item 5 must be ticked exactly when B6 is No". |
 | Sign-offs | Signature and date must be present. Dates only need to be present; the value is returned (ISO when possible). |
 
 `rule_summary.csv` lists, for every rule in the CSV, how often it was checked and failed,
@@ -166,7 +166,10 @@ with their positions.
   another printed option (noted only). If a circle overlaps Yes and No, the word it is
   centred on wins (with a note); if its line runs over the other printed word → REVIEW.
 - **Tick or X instead of a circle:** that cell's option is chosen, with a note.
-- **Circled and then crossed out (cancel):** the option is withdrawn.
+- **Circled and then crossed out (cancel):** the option is withdrawn. Only an obvious
+  crossing out counts: an X, a slash or a line straight through the word, reaching past
+  both sides of it. The start or end of a circle (a hook, a tail curling in under the word)
+  is not a crossing out, even where it happens to line up with the circle's other side.
   - If another option is circled, that one is the answer. For example, Yes circled and
     crossed out plus No circled gives **No**, with the note "Yes was cancelled".
   - If the crossed-out option was the only mark, the row has no valid answer → REVIEW.
@@ -175,6 +178,14 @@ with their positions.
   both words): FAIL, "more than one option marked". If every option marked forbids
   details (e.g. Yes and NA) and the details column has writing, that is a FAIL too.
 - **A circle cut where it crosses printed text or a row line:** the pieces are re-joined.
+  In a short row, a circle's top and bottom can run along the row lines and disappear
+  with them; what is left, a "(" and ")" reaching from line to line, still counts as the
+  circle.
+- **Print left over:** where a form is printed slightly differently from the blank, the
+  edges of a printed word can survive the print removal as thin marks hugging its ends.
+  Ink only beside a word's ends, with nothing above or below its middle, is therefore not
+  taken for a circle, unless it runs from the row's top line to its bottom line in a short
+  row (see above).
 - **Ink from a neighbouring row's circle:** the part of a circle (or its tail) that crosses
   the row line into the next row is ignored there, unless it runs over a printed option of
   that row → REVIEW.
@@ -332,7 +343,7 @@ the command line and notebook print one.
 | `--ocr azure/azure-read/none/...` | handwriting reader |
 | `--azure-pages-per-request N` | images per Azure request: 2 (free tier, default). Each image holds up to `azure_pages_per_sheet` (3) form pages, so a PDF of up to 6 pages is one request |
 | `--env-file PATH` | `.env` to load (default: `./.env`, then the project's `.env`) |
-| `--na-checkbox-rules` | turn on the NA-checkbox rules (sub-items required unless NA is ticked; cross-checks). A template whose form has the cross-checked items turns them on itself. |
+| `--na-checkbox-rules` | turn on the NA-checkbox rules (the Section B answer decides whether item 5 / 6 applies: then its NA box must be blank and every part filled, else NA ticked and every part blank). A template built from the form with B6 / B7 turns them on itself. |
 | `--cancel-means withdrawn/selected/review` | how a circled-then-crossed-out option counts |
 | `--skip-unrecognised` | leave non-form pages out of the annotated PDF |
 | `--show-pass` | also outline passing fields in green |
@@ -466,8 +477,9 @@ Copilot) the same pages, checklist and rules, and writes its verdicts in the sam
 - **Mark-type names** (`mark_type`) are best effort. A tick drawn over a word is sometimes
   called "partial-circle". The chosen answer is what decides pass/fail, and it was correct in every test.
 - **Cancellations** are found from straight strokes across a circled word. They were
-  tested on synthetic forms only, since none of the sample photos has one. A scribbled-out
-  (blacked-out) option is not specifically recognised.
+  tested on synthetic forms (X, slash, strike-through, hand-drawn) and on strokes copied
+  from real photos of circles that are not cancellations; none of the sample photos has a
+  real one. A scribbled-out (blacked-out) option is not specifically recognised.
 - **Ink exactly on a printed line or letter** can't be told apart from the print. Broken
   circles are re-joined, and extreme cases go to REVIEW.
 - **Content is not verified**: the tool doesn't know whether a reference number is the right one.
