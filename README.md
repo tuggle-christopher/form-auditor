@@ -205,8 +205,10 @@ marks with their positions.
 - **Ink from a neighbouring row's circle:** the part of a circle (or its tail) that crosses
   the row line into the next row is ignored there, unless it runs over a printed option of
   that row → REVIEW.
-- **NA checkboxes:** any pen mark in or on the box counts as ticked, a small faint mark →
-  REVIEW.
+- **NA checkboxes:** any pen mark in or on the box counts as ticked (a tick, a cross, a
+  filled box, or NA circled instead), a small faint mark → REVIEW. Ink lying only along the
+  square's own sides is the box's print (printed bolder than on the blank, or a few pixels
+  off), not a tick.
 
 Details handwriting:
 

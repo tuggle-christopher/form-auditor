@@ -123,10 +123,27 @@ def read_checkbox(item: Item, ctx: PageContext, s: Settings) -> tuple[str, int, 
     ink = 0
     if sub.any():
         import cv2
+        # The square's own printed sides, where the page's box is bolder than the blank's or
+        # sits a few pixels off: ink lying only along the sides, never inside the square or
+        # away from it, is the box itself, not a tick.
+        bx0, by0, bx1, by1 = ctx.px(item.box)
+        side = max(1, min(bx1 - bx0, by1 - by0))
+        w_in = max(4, int(round(0.25 * side)))        # into the square
+        w_out = max(10, int(round(0.5 * side)))       # out from it (bolder, or a little off)
+        band = np.zeros(sub.shape, bool)
+        X0, Y0, X1, Y1 = bx0 - x0, by0 - y0, bx1 - x0, by1 - y0
+        band[max(0, Y0 - w_out):max(0, Y1 + w_out), max(0, X0 - w_out):max(0, X1 + w_out)] = True
+        band[max(0, Y0 + w_in):max(0, Y1 - w_in), max(0, X0 + w_in):max(0, X1 - w_in)] = False
         n, lab, st, _ = cv2.connectedComponentsWithStats(sub.astype("uint8"), connectivity=8)
         for j in range(1, n):
-            if min(st[j, cv2.CC_STAT_WIDTH], st[j, cv2.CC_STAT_HEIGHT]) > s.sliver_px:
-                ink += int(st[j, cv2.CC_STAT_AREA])
+            if min(st[j, cv2.CC_STAT_WIDTH], st[j, cv2.CC_STAT_HEIGHT]) <= s.sliver_px:
+                continue
+            comp = lab == j
+            area = int(st[j, cv2.CC_STAT_AREA])
+            off = int((comp & ~band).sum())
+            if off < 20 and off < max(8, 0.15 * area):
+                continue                     # (almost) only along the box's sides: its print
+            ink += area
     if ink >= s.checkbox_ink_hi:
         return "ticked", ink, vis
     if ink <= s.checkbox_ink_lo:
