@@ -35,14 +35,6 @@ with st.sidebar:
     if B["company_name"]:
         st.subheader(B["company_name"])
     st.header("Options")
-    has_reader = reader_configured()
-    use_reader = st.checkbox(
-        "Read handwriting (Azure Document Intelligence)", value=has_reader, disabled=not has_reader,
-        help="Reads the values written in boxes (they go into the report), the printed form "
-             "version, and gives a second opinion on faint writing.")
-    if not has_reader:
-        st.caption("The handwriting reader is not set up for this app: values written in "
-                   "boxes are checked for presence only and the form version is not read.")
     show_pass = st.checkbox("Also outline checks that passed", value=False)
     st.divider()
     if B["footer"]:
@@ -50,17 +42,26 @@ with st.sidebar:
     if B["support_contact"]:
         st.caption(B["support_contact"])
 
+# The handwriting reader is always used: it reads the Section A values for the report, the
+# printed form version (Document ID line) and gives a second opinion on faint writing. Without
+# it the app does not check forms at all.
+has_reader = reader_configured()
+if not has_reader:
+    st.error("The handwriting reader (Azure Document Intelligence) is not set up for this app, "
+             "so forms can't be checked. Add the endpoint and key as the app's resources "
+             "(adi-endpoint and adi-key - see README, \"Running it as a web app\") and redeploy.")
+
 uploads = st.file_uploader("Forms", type=["pdf", "jpg", "jpeg", "png", "tif", "tiff"],
                            accept_multiple_files=True)
 
-if st.button("Check forms", type="primary", disabled=not uploads):
+if st.button("Check forms", type="primary", disabled=not (uploads and has_reader)):
     n = len(uploads)
     with st.status(f"Checking {n} file{'s' if n != 1 else ''} - about 10-15 seconds per "
                    f"3-page form...", expanded=False) as box:
         try:
             st.session_state["result"] = audit_uploads(
                 [(u.name, u.getvalue()) for u in uploads],
-                use_reader=use_reader, show_pass=show_pass)
+                use_reader=True, show_pass=show_pass)
             box.update(label="Done", state="complete")
         except Exception as e:                           # shown, not hidden
             st.session_state.pop("result", None)
@@ -91,8 +92,6 @@ if res is not None:
     c[2].metric("Need review", t["review"])
     c[3].metric("Not recognised", t["unrecognised"])
     c[4].metric("Pass", t["pass"])
-    if not res.reader_used:
-        st.caption("Checked without the handwriting reader.")
 
     st.subheader("Report")
     if res.documents:

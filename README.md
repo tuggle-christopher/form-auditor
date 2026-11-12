@@ -84,8 +84,9 @@ account. Nothing is stored: uploads and results live only in that session.
 3. **Create the app**: Compute > Apps > Create app > custom app (e.g. `form-auditor`).
    Under its resources, add two **secrets**: `form-auditor` / `adi-endpoint` with the
    resource key `adi-endpoint`, and `form-auditor` / `adi-key` with the resource key
-   `adi-key` (`app.yaml` reads them by those keys). Without them the app still works,
-   checking boxes for writing without reading it.
+   `adi-key` (`app.yaml` reads them by those keys). The app always uses the handwriting
+   reader (Section A values for the report, the form version, faint writing): without
+   these two secrets it says so and won't check forms.
 4. **Deploy** with the source code path set to the folder from step 1 - from the app's
    page (Deploy), or `databricks apps deploy form-auditor --source-code-path /Workspace/Users/<you>/form-auditor-app`.
 5. **Share it**: give the people who audit forms *Can use* on the app.
