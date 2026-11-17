@@ -213,9 +213,12 @@ marks with their positions.
   the row line into the next row is ignored there, unless it runs over a printed option of
   that row → REVIEW.
 - **NA checkboxes:** any pen mark in or on the box counts as ticked (a tick, a cross, a
-  filled box, or NA circled instead), a small faint mark → REVIEW. Ink lying only along the
-  square's own sides is the box's print (printed bolder than on the blank, or a few pixels
-  off), not a tick.
+  filled box, or NA circled instead). A light or thin mark counts by its shape, not its
+  amount of ink: a line from corner to corner (either way), an X or a tick is ticked
+  however lightly it is drawn - the box is looked at with only its printed lines taken
+  out, and light ink included. A small faint mark that is none of those (a dot, a short
+  dash, a smudge) → REVIEW. Ink lying only along the square's own sides is the box's print
+  (printed bolder than on the blank, or a few pixels off), not a tick.
 
 Details handwriting:
 

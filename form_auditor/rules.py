@@ -151,6 +151,145 @@ def read_checkbox(item: Item, ctx: PageContext, s: Settings) -> tuple[str, int, 
     return "uncertain", ink, vis
 
 
+def _printed_box(g: np.ndarray, rect: tuple[int, int, int, int], side: int) -> np.ndarray:
+    """Where the square is really printed on this page: the outline (shifted a few pixels,
+    a little larger, drawn bolder than on the blank) that best fits the dark print around
+    the blank's square. g: grey crop; rect: the blank's square in crop coordinates."""
+    import cv2
+    paper = cv2.dilate(g, np.ones((2 * side + 1, 2 * side + 1), np.uint8))
+    dark = (paper - g) > 70                          # printed black, not light pen
+    x0, y0, x1, y1 = rect
+    best, best_mask = -1e9, np.zeros(g.shape, bool)
+    for th in (1, 2, 3, 4, 5, 6):
+        for grow in (0, 1, 2, 3):
+            for dy in range(-4, 5):
+                for dx in range(-4, 5):
+                    m = np.zeros(g.shape, np.uint8)
+                    cv2.rectangle(m, (x0 - grow + dx, y0 - grow + dy), (x1 + grow + dx, y1 + grow + dy), 1, th)
+                    m = m.astype(bool)
+                    on = int((m & dark).sum())
+                    score = on - 1.5 * int((m & ~dark).sum())
+                    if score > best:
+                        best, best_mask = score, m
+    return best_mask
+
+
+def checkbox_shape(item: Item, ctx: PageContext, s: Settings) -> str:
+    """The shape of the pen mark in an NA box, from the normal and the sensitive ink passes
+    together, so a light or thin mark counts by its shape rather than its amount of ink:
+    'line' (one stroke from corner to corner), 'cross' (an X) or 'tick' (a short stroke down
+    to a point, a long one up to the right); '' when it is none of those (a dot, a smudge, a
+    few broken bits). The box's own print is left out: the blank's square, and the square as
+    it is really printed on this page (bolder, larger or a few pixels off)."""
+    import cv2
+    import math
+    from .marks import _thin
+    bx0, by0, bx1, by1 = ctx.px(item.box)
+    side = max(1, min(bx1 - bx0, by1 - by0))
+    m = int(round(0.8 * side))                       # ticks run well out of the box
+    H, W = ctx.shape
+    x0, y0, x1, y1 = max(0, bx0 - m), max(0, by0 - m), min(W, bx1 + m), min(H, by1 + m)
+    # The box is small, so taking its print out with the usual margin (template_dilate_px)
+    # also takes most of a mark drawn through it. Here only the printed lines themselves
+    # (and print_core_px round them) are taken out, and light ink counts (the sensitive
+    # pass's thresholds).
+    ink = ctx.maps.added[y0:y1, x0:x1].copy()
+    if ctx.faint_ctx() is not None:
+        ink |= ctx.faint_ctx().maps.added[y0:y1, x0:x1]
+    if ctx.tpl_core is not None:
+        # paper level = the brightest nearby (a median would be pulled down by a bold box)
+        g = cv2.cvtColor(ctx.maps.warped[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY).astype(np.float32)
+        paper = cv2.dilate(g, np.ones((2 * side + 1, 2 * side + 1), np.uint8))
+        gb = cv2.GaussianBlur(g, (0, 0), 1.0)
+        raw = ((paper - gb) > max(30.0, s.faint_ink_contrast)) & (gb <= s.faint_dark_max)
+        ink |= raw & ~ctx.tpl_core[y0:y1, x0:x1] & ~ctx.maps.occluded[y0:y1, x0:x1]
+        # and the square as it is really printed here (bolder, larger or a little off)
+        box_here = _printed_box(g, (bx0 - x0, by0 - y0, bx1 - x0, by1 - y0), side)
+        ink &= ~cv2.dilate(box_here.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    if not ink.any():
+        return ""
+    # the box's own sides (printed bolder, or a little off) only give level and upright
+    # pieces, which none of the shapes below use
+    X0, Y0, X1, Y1 = bx0 - x0, by0 - y0, bx1 - x0, by1 - y0
+    skel = _thin(cv2.morphologyEx(ink.astype(np.uint8), cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)) > 0)
+    cx, cy = (X0 + X1) / 2, (Y0 + Y1) / 2
+    near_ink = cv2.dilate(skel.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+
+    def segs(min_len):
+        out = []
+        # gaps up to a third of the box are jumped: where the mark crosses the box's printed
+        # lines it is lost with them
+        L = cv2.HoughLinesP(skel.astype(np.uint8) * 255, 1, np.pi / 180, max(5, int(0.25 * side)),
+                            minLineLength=max(4, int(min_len)), maxLineGap=max(6, int(0.35 * side)))
+        for xa, ya, xb, yb in ([] if L is None else L.reshape(-1, 4).tolist()):
+            if xb < xa:
+                xa, ya, xb, yb = xb, yb, xa, ya
+            ang = math.degrees(math.atan2(-(yb - ya), xb - xa)) % 180
+            c = "A" if 20 <= ang <= 75 else "B" if 105 <= ang <= 160 else None    # / and \
+            if c:
+                length = math.hypot(xb - xa, yb - ya)
+                # mostly real ink, not a line joined up across empty space (the box's sides)
+                t = np.linspace(0, 1, max(5, int(length)))
+                xs_ = np.clip(np.round(xa + (xb - xa) * t).astype(int), 0, near_ink.shape[1] - 1)
+                ys_ = np.clip(np.round(ya + (yb - ya) * t).astype(int), 0, near_ink.shape[0] - 1)
+                if near_ink[ys_, xs_].mean() < 0.65:
+                    continue
+                d = abs((xb - xa) * (ya - cy) - (xa - cx) * (yb - ya)) / max(length, 1)
+                out.append((c, length, d, (xa, ya, xb, yb)))
+        return out
+
+    def over_box(seg):
+        xa, ya, xb, yb = seg
+        return min(xa, xb) < X1 and max(xa, xb) > X0 and min(ya, yb) < Y1 and max(ya, yb) > Y0
+
+    # what is left of the inside of the box once its printed lines are taken out
+    inner = max(6.0, side - 2 * (s.print_core_px + 2))
+    diag = inner * math.sqrt(2)
+    pieces = [g for g in segs(0.2 * side) if over_box(g[3])]
+
+    # A line through the box, or an X: the share of a straight diagonal across the inside of
+    # the box, through or near its middle, that lies on ink (measured along the line, so a
+    # thick, blotchy or broken stroke counts as well as a clean one; a dot or a short dash
+    # covers only a little of it, the box's own sides only its ends).
+    e = s.print_core_px + 2                         # clear of the box's sides
+    ix0, iy0, ix1, iy1 = X0 + e, Y0 + e, X1 - e, Y1 - e
+    on_ink = cv2.dilate(ink.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+
+    def along(c):
+        best = 0.0
+        angles = {"A": range(35, 56, 5), "B": range(125, 146, 5)}[c]   # corner to corner
+        for ang in angles:
+            ux, uy = math.cos(math.radians(ang)), -math.sin(math.radians(ang))
+            for o in np.arange(-0.2 * side, 0.2 * side + 0.01, 1.0):
+                px, py = cx - uy * o, cy + ux * o
+                t = np.arange(-side, side, 0.5)
+                xs_, ys_ = px + ux * t, py + uy * t
+                inside = (xs_ >= ix0) & (xs_ < ix1) & (ys_ >= iy0) & (ys_ < iy1)
+                if inside.sum() * 0.5 < 1.1 * (ix1 - ix0):
+                    continue                 # not right across the box, corner to corner
+                hit = on_ink[ys_[inside].astype(int), xs_[inside].astype(int)]
+                best = max(best, float(hit.mean()))
+        return best
+
+    cov = {c: along(c) for c in "AB"}
+    if min(cov.values()) >= 0.8:
+        return "cross"
+    if max(cov.values()) >= 0.9:
+        return "line"                    # also a tick whose short arm went with the box's line
+    # a tick: a long arm up to the right (/), a short arm down from the left (\), meeting at
+    # the lowest point
+    for a_ in [g for g in pieces if g[0] == "A" and g[1] >= 0.4 * diag and g[2] <= 0.45 * side]:
+        ax, ay = a_[3][0], a_[3][1]                   # the long arm's lower (left) end
+        for b_ in [g for g in pieces if g[0] == "B"]:
+            bx, by = b_[3][2], b_[3][3]               # the short arm's lower (right) end
+            # the short arm comes down from the left to the point, and the long arm goes on
+            # up past the middle of the box
+            if (math.hypot(ax - bx, ay - by) <= 0.35 * side + 3 and by >= b_[3][1] and ay >= a_[3][3]
+                    and b_[3][0] < ax - 2 and a_[3][2] > cx and ay > cy - 0.1 * side):
+                return "tick"
+    return ""
+
+
 def audit_checkbox(sec: Section, item: Item, ctx: PageContext, s: Settings,
                    page_text: Optional[PageText] = None) -> Finding:
     state, ink, vis = read_checkbox(item, ctx, s)
@@ -160,6 +299,13 @@ def audit_checkbox(sec: Section, item: Item, ctx: PageContext, s: Settings,
         if fstate != "blank":
             state = "uncertain"
             notes.append("faint mark in the NA box (light pen or pencil?)")
+    if state in ("uncertain", "blank"):
+        # little or light ink, but a clear shape - a line corner to corner, an X, a tick: ticked
+        shape = checkbox_shape(item, ctx, s)
+        if shape:
+            state = "ticked"
+            notes = [f"light / thin {'line through the box' if shape == 'line' else shape} in the NA "
+                     f"box - read as ticked by its shape"]
     m = checkbox_mark(page_text, ctx.px(item.box))
     if m is not None:
         notes.append(f"handwriting reader: box {m.state} ({m.confidence:.2f})")
