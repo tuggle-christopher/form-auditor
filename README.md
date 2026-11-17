@@ -87,6 +87,12 @@ account. Nothing is stored: uploads and results live only in that session.
    `adi-key` (`app.yaml` reads them by those keys). The app always uses the handwriting
    reader (Section A values for the report, the form version, faint writing): without
    these two secrets it says so and won't check forms.
+   For the archive (a record of every run, see "Archive" below), two more secrets:
+   `archive-url` (the folder, e.g.
+   `https://<account>.blob.core.windows.net/<container>/form-audit-archive`) and
+   `archive-connection` (the storage account's connection string). Not keeping one?
+   Delete the two archive entries from `app.yaml` - a key `app.yaml` names but the app
+   doesn't have stops it from starting.
 4. **Deploy** with the source code path set to the folder from step 1 - from the app's
    page (Deploy), or `databricks apps deploy form-auditor --source-code-path /Workspace/Users/<you>/form-auditor-app`.
 5. **Share it**: give the people who audit forms *Can use* on the app.
@@ -130,13 +136,13 @@ The kinds of checks:
 
 | check | what the auditor does |
 |---|---|
-| Header fields | Must be filled in. The value is read and returned. "NA" can be allowed or forbidden per field (needs the handwriting reader). |
+| Header fields | Must be filled in. The value is read and returned. "NA" can be allowed or forbidden per field (needs the handwriting reader). A date that looks questionable → REVIEW, boxed on the PDF: a month the reader got slightly wrong (22 See 26 - still read as 22 Sep 2026, so the value is there to confirm), digits read as letters (2O-O9-26), a reading the reader was unsure of (below `date_min_conf`, 0.8), something that isn't a date (31 Feb, or 22 Mat 26 - Mar or May?), a date in the future (more than `date_future_days`, 1) or long ago (more than `date_max_age_days`, 365). Clearly written dates (22 Sep 26, 22/09/26, 22-Sep-2026) pass. `--set check_date_format=false` turns this off. |
 | Answer rows | Exactly one **printed** option (Yes / No / NA) must be marked. NA written in, or circled in an empty cell, is flagged. |
 | Flagged answers | e.g. any **No** → FAIL, optionally only on the first rows of a section. The details read are returned. |
 | Details column | Writing next to an answer that must have empty details (e.g. Yes / NA) → FAIL. |
 | Items with sub-items | e.g. 5.1–5.6 under item 5, with an NA box. With the NA-checkbox rules on, the Section B answer that goes with the item (B6 for item 5, B7 for item 6) says whether it applies. **Applies:** the NA box must be blank, and every part must be filled in (each blank part FAILs). **Doesn't apply:** the NA box must be ticked, and every part must be blank (each filled part FAILs). A wrongly ticked or wrongly blank NA box FAILs as well. If the Section B answer can't be read, the NA box decides which of the two applies. If neither can be read, the parts decide (any part filled in means every part is required) and the NA box goes to REVIEW. Section B and Section D must be in the same file for Section B to count: a file holding only page 2 is checked by its NA box. With the rules off, an item that is partly filled in must be complete. Time fields need HH:MM; number fields need a value. |
 | Cross-checks | e.g. "the NA box of item 5 must be ticked exactly when B6 is No". |
-| Sign-offs | Signature and date must be present. Dates only need to be present; the value is returned (ISO when possible). |
+| Sign-offs | Signature and date must be present. Sign-off dates only need to be present (a day alone is fine); the value is returned (ISO when possible). |
 
 `rule_summary.csv` lists, for every rule in the CSV, how often it was checked and failed,
 and marks the rules nothing on this version of the form uses as "not checked".
@@ -331,11 +337,31 @@ The columns of `all_findings.csv`:
 Pages are grouped into forms (page 1 + 2 + 3) in `extracted_data.csv` and in the
 `form_no` column.
 
-`document_report.csv` has one row per document (a form in a file): `file, form_no, form,
-form_status, version_read, version_status, pages, missing_pages`, then one column per
-Section A field (`A: Container number`, ... - the values the handwriting reader read; the
-`report_value_sections` setting picks other sections), `total_fails, total_reviews` and
-`Section A fails` ... `Section E fails`.
+`document_report.csv` has one row per document (a form in a file), passing ones included:
+`file, form_status, version_status`, then one column per Section A field (`A: Container
+number`, ... - the values the handwriting reader read; the `report_value_sections` setting
+picks other sections), `total_fails, total_reviews` and `Section A fails` ...
+`Section E fails`. This is the copy people get: `form_no, form, version_read, pages,
+missing_pages` are left out of it (the `client_hidden_columns` setting lists them). The
+archived record keeps every column.
+
+### Archive: a record of every run
+
+Every run can keep a record for you: all its CSV reports - the document report with every
+column, `all_findings.csv`, `batch_summary.csv`, `extracted_data.csv`, `rule_summary.csv`,
+each file's own CSVs - and `run_info.csv` (when, from where - web app, notebook, command
+line - how many documents passed / failed, the reader used). Only CSVs: no forms, PDFs or
+pictures. Each run gets its own folder, `<archive>/<yyyy>/<mm>/<yyyymmdd-hhmmss>_<id>/`, so
+nothing is ever overwritten.
+
+Where: the environment variable `FORM_AUDITOR_ARCHIVE` (in `.env`, or a secret of the app),
+or `--archive` / `run_audit(archive=...)` / the notebook's Archive box. A blob storage
+folder (`https://<account>.blob.core.windows.net/<container>/<folder>`, with
+`AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_SAS_TOKEN` or `AZURE_STORAGE_KEY`),
+`abfss://...` on a Databricks cluster, `/Volumes/...` or a local folder. Not set: no
+record is kept. If saving the record fails (no access, wrong key), the run still finishes
+and its results are delivered; the command line and notebook print a warning and the app
+shows one.
 
 ### Form version check
 

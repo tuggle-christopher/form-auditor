@@ -32,7 +32,7 @@ def _cmd_audit(a) -> int:
                     show_pass=a.show_pass, debug=a.debug,
                     skip_unrecognised=a.skip_unrecognised,
                     keep_pdf_annotations=a.keep_pdf_annotations, dpi=a.dpi,
-                    verbose=not a.quiet)
+                    archive=a.archive, run_source="command line", verbose=not a.quiet)
     if res["stopped"]:
         print(f"\nSTOPPED: {res['stopped']}", file=sys.stderr)
         return 2
@@ -53,6 +53,12 @@ def main(argv=None) -> int:
     au.add_argument("-o", "--out", default="audit_out",
                     help="output folder (local, /dbfs/..., abfss://, wasbs://, dbfs:/ or "
                          "https://<account>.blob.core.windows.net/...)")
+    au.add_argument("--archive", default=None,
+                    help="keep a record of the run (every CSV, the document report with all its "
+                         "columns) in a new folder under this location - blob storage "
+                         "(https://<account>.blob.core.windows.net/<container>/<folder>, "
+                         "abfss://...), /Volumes/... or a local folder. Default: the "
+                         "FORM_AUDITOR_ARCHIVE environment variable (e.g. in .env)")
     au.add_argument("--env-file", default=None,
                     help=".env file with AZURE_DI_ENDPOINT / AZURE_DI_KEY etc. "
                          "(default: ./.env or the project's .env)")

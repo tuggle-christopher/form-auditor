@@ -8,3 +8,9 @@ env:
     valueFrom: "adi-endpoint"
   - name: AZURE_DI_KEY
     valueFrom: "adi-key"
+  # The record of every run (all CSVs, the full document report) - see README, "Archive".
+  # Delete these two entries if you don't keep one.
+  - name: FORM_AUDITOR_ARCHIVE
+    valueFrom: "archive-url"
+  - name: AZURE_STORAGE_CONNECTION_STRING
+    valueFrom: "archive-connection"

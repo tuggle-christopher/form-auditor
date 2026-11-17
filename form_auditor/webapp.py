@@ -44,6 +44,9 @@ class BatchResult:
     document_report: Path
     documents: list[dict]
     reader_used: bool
+    document_columns: list = field(default_factory=list)   # the report's columns people see
+    archive: str = ""                # where the record of this run was kept
+    archive_error: str = ""
     stopped: str = ""
     seconds: float = 0.0
 
@@ -108,7 +111,7 @@ def audit_uploads(uploads: list[tuple[str, bytes]], use_reader: bool = True,
         paths.append(inp / fn)
     reader = use_reader and reader_configured()
     res = run_audit(paths, out, templates=templates, ocr="azure" if reader else "none",
-                    show_pass=show_pass, verbose=False) if paths else \
+                    show_pass=show_pass, run_source="web app", verbose=False) if paths else \
         {"summary": [], "findings": [], "documents": [], "stopped": ""}
     out.mkdir(exist_ok=True)
 
@@ -147,6 +150,8 @@ def audit_uploads(uploads: list[tuple[str, bytes]], use_reader: bool = True,
                        documents=[{**d, "file": names.get(d.get("file", ""), d.get("file", ""))}
                                   for d in res.get("documents", [])],
                        reader_used=reader,
+                       document_columns=res.get("document_columns", []),
+                       archive=res.get("archive", ""), archive_error=res.get("archive_error", ""),
                        stopped=res.get("stopped", ""), seconds=time.time() - t0)
 
 

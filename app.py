@@ -72,6 +72,9 @@ res = st.session_state.get("result")
 if res is not None:
     if res.stopped:
         st.error(f"Stopped early: {res.stopped}")
+    if res.archive_error:
+        st.warning(f"The results are below, but the record of this run could not be saved to "
+                   f"the archive: {res.archive_error}")
 
     # forms whose version is not one this tool knows: said first, plainly
     for d in res.documents:
@@ -95,7 +98,9 @@ if res is not None:
 
     st.subheader("Report")
     if res.documents:
-        st.dataframe(res.documents, hide_index=True, use_container_width=True)
+        cols = res.document_columns or list(res.documents[0])
+        st.dataframe([{c: d.get(c, "") for c in cols} for d in res.documents],
+                     hide_index=True, use_container_width=True)
     d1, d2, d3 = st.columns(3)
     if res.document_report.is_file():
         d1.download_button("Download the report (.csv)", data=res.document_report.read_bytes(),

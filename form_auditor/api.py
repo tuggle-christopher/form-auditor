@@ -17,8 +17,9 @@ from .env import PROJECT_ROOT, load_env
 from .io_utils import iter_input_files
 from .ocr import FatalOcrError, make_engine
 from .pipeline import Auditor
-from .report import (FINDING_COLUMNS, RULE_SUMMARY_COLUMNS, SUMMARY_COLUMNS, document_report,
-                     rule_summary, write_csv)
+from .archive import archive_destination, archive_run
+from .report import (FINDING_COLUMNS, RULE_SUMMARY_COLUMNS, SUMMARY_COLUMNS, client_columns,
+                     document_report, rule_summary, write_csv)
 from .settings import Settings
 from .storage import local_output_dir, stage_inputs, upload
 from .template import load_template
@@ -73,6 +74,8 @@ def run_audit(inputs: list[str | Path] | str | Path,
               skip_unrecognised: bool = False,
               keep_pdf_annotations: bool = False,
               dpi: Optional[int] = None,
+              archive: Optional[str] = None,
+              run_source: str = "",
               verbose: bool = True) -> dict:
     """Audit files / folders (local paths, /dbfs/... paths, abfss://, wasbs://, dbfs:/ or
     https://<account>.blob.core.windows.net/... URLs) and write the reports to `out`
@@ -81,8 +84,12 @@ def run_audit(inputs: list[str | Path] | str | Path,
     `settings` overrides values of form_auditor/settings.py, e.g.
     {"na_checkbox_rules": True, "date_order": "MDY"}.
 
+    `archive`: where to keep a record of the run (all CSVs, the document report with every
+    column) - default: the FORM_AUDITOR_ARCHIVE environment variable; none if neither is set.
+    `run_source` is noted in that record (e.g. "web app", "notebook").
+
     Returns {"out", "pages", "failing", "review", "unrecognised", "findings", "summary",
-    "extracted", "stopped"}.
+    "extracted", "documents", "document_columns", "archive", "archive_error", "stopped"}.
     """
     load_env(env_file)
     if isinstance(inputs, (str, Path)):
@@ -127,7 +134,8 @@ def run_audit(inputs: list[str | Path] | str | Path,
         write_csv(out_local / "batch_summary.csv", summary_all, SUMMARY_COLUMNS)
         write_csv(out_local / "extracted_data.csv", records_all)
         documents, doc_cols = document_report(tpls, rows_all, summary_all, records_all)
-        write_csv(out_local / "document_report.csv", documents, doc_cols)
+        client_cols = client_columns(doc_cols, tpls[0].settings.client_hidden_columns)
+        write_csv(out_local / "document_report.csv", documents, client_cols)
         rules, inactive = {}, {}
         for t in tpls:
             rules.update(t.rules)
@@ -145,6 +153,25 @@ def run_audit(inputs: list[str | Path] | str | Path,
                   RULE_SUMMARY_COLUMNS)
         if out_remote:
             upload(out_local, out_remote)
+        # the record of the run, for yourself: every CSV, the document report complete
+        archived, archive_error = "", ""
+        dest = archive_destination(archive)
+        if dest:
+            try:
+                archived = archive_run(out_local, documents, doc_cols, dest, {
+                    "source": run_source or "run_audit",
+                    "files": len({s.get("file") for s in summary_all}),
+                    "documents": len(documents),
+                    "pages": len(summary_all),
+                    "fail": sum(d.get("form_status") in ("FAIL", "ERROR") for d in documents),
+                    "review": sum(d.get("form_status") == "REVIEW" for d in documents),
+                    "pass": sum(d.get("form_status") == "PASS" for d in documents),
+                    "not_recognised": sum(d.get("form_status") == "NOT RECOGNISED" for d in documents),
+                    "handwriting_reader": getattr(engine, "name", None) or ocr,
+                    "templates": ", ".join(t.form_id for t in tpls),
+                    "stopped": stopped})
+            except Exception as e:                       # never lose the results over it
+                archive_error = f"{type(e).__name__}: {e}"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -155,13 +182,18 @@ def run_audit(inputs: list[str | Path] | str | Path,
         "review": sum(s.get("page_status") == "REVIEW" for s in summary_all),
         "unrecognised": sum(s.get("page_status") == "UNRECOGNISED" for s in summary_all),
         "findings": rows_all, "summary": summary_all, "extracted": records_all,
-        "documents": documents,
+        "documents": documents, "document_columns": client_cols,
+        "archive": archived, "archive_error": archive_error,
         "stopped": stopped,
     }
     if verbose:
         for d in documents:
             if str(d.get("version_status", "")).startswith(("NOT RECOGNISED", "FORM NOT RECOGNISED")):
                 print(f"  FORM VERSION NOT RECOGNISED: {d['file']} - {d['version_status']}")
+        if archived:
+            print(f"  Record of this run kept in {archived}")
+        elif archive_error:
+            print(f"  WARNING: the record of this run could not be archived: {archive_error}")
         print(f"\n{result['pages']} page(s): {result['failing']} failing, {result['review']} need "
               f"review, {result['unrecognised']} not recognised as a known form page. "
               f"Reports in {out}/" + (f"\nSTOPPED: {stopped}" if stopped else ""))

@@ -317,3 +317,10 @@ def document_report(templates, findings: list[dict], summary: list[dict],
             + [f"Section {s} fails" for s in sections]
             + (["Other fails"] if any("Other fails" in r for r in rows) else []) + ["note"])
     return rows, cols
+
+
+def client_columns(cols: list[str], hidden: str) -> list[str]:
+    """The document report's columns for the copy people get: without the ones named in the
+    `client_hidden_columns` setting (comma-separated). The archived record keeps them all."""
+    drop = {c.strip() for c in str(hidden or "").split(",") if c.strip()}
+    return [c for c in cols if c not in drop]

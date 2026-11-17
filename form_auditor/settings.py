@@ -86,6 +86,9 @@ class Settings:
                                           # testing for a circle around a crossed-out word
     report_value_sections: str = "A"     # sections whose written values go into the
                                           # per-document report (comma-separated)
+    client_hidden_columns: str = "form_no,form,version_read,pages,missing_pages"
+                                          # left out of document_report.csv (the copy people
+                                          # get); the archived record keeps every column
     slash_piece_min: float = 0.35         # a line through a word (cancel) needs a straight piece
                                           # at least this share of the word's width on each side
     slash_alone_min: float = 0.6          # ...this share for a slash with no second line, unless
@@ -149,9 +152,14 @@ class Settings:
     ocr_fail_conf: float = 0.85           # a format violation is FAIL only when read this surely
     date_order: str = "DMY"               # numeric dates: 14-10-26 = 14 Oct
     time_strict: bool = False             # True: HH:MM must have two-digit hours (09:05)
-    check_date_format: bool = False       # True: a date that can't be read as a date -> REVIEW
+    check_date_format: bool = True        # dates that look questionable -> REVIEW: not a date
+                                          # (31 Feb), a month or digits guessed at (22 See 26),
+                                          # read with low confidence, in the future or long ago
                                           # (False: dates only need to be present; the value
                                           # read is still reported, ISO-normalised if possible)
+    date_min_conf: float = 0.8            # a date read less surely than this -> REVIEW
+    date_future_days: int = 1             # a date more than this many days ahead -> REVIEW (-1: off)
+    date_max_age_days: int = 365          # a date more than this many days ago -> REVIEW (0: off)
 
     @classmethod
     def field_names(cls) -> set[str]:

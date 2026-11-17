@@ -304,6 +304,30 @@ def audit_choice(sec: Section, item: Item, rd: ChoiceReading, dr: Optional[Detai
 # --------------------------------------------------------------------------- #
 # Values (transcription)
 # --------------------------------------------------------------------------- #
+def today():
+    """The date a written date is compared with (a function so tests can fix it)."""
+    from datetime import date
+    return date.today()
+
+
+def _date_doubt(v, res, s: Settings) -> str:
+    """Why a date that was read needs a person to look at it, or '' when it reads clearly:
+    a month or digits the reader had to guess at (22 See 26), a reading it was unsure of,
+    or a date in the future or long ago."""
+    from datetime import date
+    shown = date.fromisoformat(v.normalized).strftime("%d %b %Y")
+    if v.doubt:
+        return f"Date read as '{v.raw}' - {v.doubt} ({shown}) - check"
+    if res.confidence < s.date_min_conf:
+        return f"Date read as '{v.raw}' ({shown}) with low confidence ({res.confidence:.2f}) - check"
+    days = (date.fromisoformat(v.normalized) - today()).days
+    if s.date_future_days >= 0 and days > s.date_future_days:
+        return f"Date read as '{v.raw}' ({shown}) is in the future - check"
+    if s.date_max_age_days > 0 and -days > s.date_max_age_days:
+        return f"Date read as '{v.raw}' ({shown}) is more than {s.date_max_age_days} days ago - check"
+    return ""
+
+
 def _apply_value(f: Finding, item: Item, fmt: str, res, s: Settings, is_details: bool) -> None:
     if res is None:
         f.notes.append("not transcribed")
@@ -340,12 +364,14 @@ def _apply_value(f: Finding, item: Item, fmt: str, res, s: Settings, is_details:
             f.escalate("FAIL" if confident else "REVIEW",
                        f"Time must be written as HH:MM - read '{v.raw}'")
         elif fmt == "date":
-            if s.check_date_format:
-                f.escalate("REVIEW", f"Could not interpret '{v.raw}' as a date - check")
+            if s.check_date_format and not item.presence_only:
+                f.escalate("REVIEW", f"Date read as '{v.raw}' - can't tell which date this is - check")
             else:
                 f.notes.append("not a recognisable date (date format is not checked)")
         else:
             f.escalate("REVIEW", f"Value '{v.raw}' is {v.problem} - check")
+    elif fmt == "date" and s.check_date_format and not item.presence_only and _date_doubt(v, res, s):
+        f.escalate("REVIEW", _date_doubt(v, res, s))
     elif res.confidence < s.ocr_min_conf:
         if item.presence_only:
             f.notes.append(f"read with low confidence as '{v.raw}' (only presence is checked)")
