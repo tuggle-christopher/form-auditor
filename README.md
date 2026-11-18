@@ -109,8 +109,14 @@ tool. To try the app on a laptop: `pip install streamlit`, then `streamlit run a
 - `branding/branding.yaml` (copy `branding.example.yaml`): page title, subtitle, company
   name, logo (a file in `branding/`), footer, support contact, and an optional extra
   stylesheet (`css:`) for anything the theme doesn't cover.
+- `branding/how_to_use.md` (copy `how_to_use.example.md`): the text of the **How to use**
+  pop-up - what to upload (scanned PDFs), what FAIL / Needs review / Not recognised /
+  PASS mean, where to find the problems and what to download. Without it the app shows the
+  example text. The pop-up opens once when someone opens the app (`guide_on_open: false` in
+  `branding.yaml` turns that off) and is always in the sidebar. Buttons and boxes also
+  have short tips (the ⓘ next to them).
 
-`tools/make_app_bundle.py` copies both into the app folder; redeploy to see changes.
+`tools/make_app_bundle.py` copies these into the app folder; redeploy to see changes.
 
 ## What is checked
 

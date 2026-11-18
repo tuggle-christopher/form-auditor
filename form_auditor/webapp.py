@@ -15,7 +15,7 @@ from typing import Optional
 
 from .env import load_env
 
-ALLOWED = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+ALLOWED = {".pdf"}                  # the app takes scanned PDFs only
 WORK_PREFIX = "form_auditor_app_"
 KEEP_HOURS = 2.0                    # results of earlier sessions are deleted after this
 RANK = {"ERROR": 5, "FAIL": 4, "REVIEW": 3, "UNRECOGNISED": 2, "PASS": 1, "": 0}
@@ -136,7 +136,7 @@ def audit_uploads(uploads: list[tuple[str, bytes]], use_reader: bool = True,
         files.append(fr)
     for name in skipped:
         files.append(FileResult(name=name, status="ERROR",
-                                note="not a PDF or image (PDF, JPG, PNG or TIFF only)"))
+                                note="not a PDF (scanned PDFs only)"))
     files.sort(key=lambda f: (-RANK.get(f.status, 0), f.name.lower()))
 
     zip_path = work / "form_audit_results.zip"
@@ -161,13 +161,53 @@ def audit_uploads(uploads: list[tuple[str, bytes]], use_reader: bool = True,
 # --------------------------------------------------------------------------- #
 BRANDING_DEFAULTS = {
     "app_title": "Form auditor",
-    "subtitle": ("Upload scanned or photographed checklist forms (PDF or photos). Each page is "
+    "subtitle": ("Upload scanned checklist forms (PDF). Each page is "
                  "checked against the blank form and the rules: problems are boxed and numbered "
                  "on the PDF, and the report lists what was checked, where and why."),
     "company_name": "", "logo": "", "logo_small": "",
-    "footer": "Files are processed for this session only and are not kept.",
+    "footer": "Uploaded forms are used for this check only and are not kept.",
     "support_contact": "", "css": "",
+    "guide_on_open": True,         # open "How to use" when someone opens the app
 }
+
+# The "How to use" guide (a pop-up in the app). Replace it by writing your own in
+# branding/how_to_use.md (start from branding/how_to_use.example.md).
+GUIDE_DEFAULT = """\
+**1. Add your scanned forms**  
+Drag the PDF files onto the box, or click **Browse files**. Several at once is fine, and
+one PDF can hold several forms.
+
+**2. Check them**  
+Click **Check forms**. A 3-page form takes about 10-15 seconds.
+
+**3. See what was found**  
+Every form gets one result:
+
+| Result | Meaning |
+|---|---|
+| **FAIL** | Something breaks a rule: a wrong answer, a missing entry, a sign-off left blank |
+| **Needs review** | The tool couldn't be sure (faint or unclear writing): a person should look |
+| **Not recognised** | Not this form, or a version of it the tool doesn't know |
+| **PASS** | Everything checked out |
+
+Open a file under **Files** to see the list of problems. In its **marked-up PDF** each
+problem is boxed and numbered, and the number matches the **#** in the list.
+
+**4. Download**  
+**Download the report** gives one row per form with its Section A details.
+**Download everything** gives the marked-up PDFs and all the reports in one zip.
+"""
+
+
+def load_guide(root: Optional[Path] = None) -> str:
+    """branding/how_to_use.md if there is one, else the built-in guide."""
+    root = Path(root or Path(__file__).resolve().parents[1])
+    f = root / "branding" / "how_to_use.md"
+    try:
+        text = f.read_text(encoding="utf-8") if f.is_file() else GUIDE_DEFAULT
+    except OSError:
+        return GUIDE_DEFAULT
+    return re.sub(r"\A\s*<!--.*?-->\s*", "", text, flags=re.S)       # a note at the top
 
 
 def load_branding(root: Optional[Path] = None) -> dict:
